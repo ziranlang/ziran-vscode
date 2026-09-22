@@ -1,0 +1,56 @@
+name: Build VSIX
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish GitHub Release for the package version
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run package
+      - run: unzip -t kryon-language-*.vsix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kryon-language-vsix
+          path: kryon-language-*.vsix
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release && github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kryon-language-vsix
+          path: dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          gh release create "v${version}" dist/kryon-language-*.vsix \
+            --target "$GITHUB_SHA" \
+            --title "Kryon Language v${version}" \
+            --generate-notes
