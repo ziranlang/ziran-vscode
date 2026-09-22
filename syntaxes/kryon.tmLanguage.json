@@ -32,7 +32,7 @@
       "patterns": [
         {
           "name": "meta.preprocessor.kryon",
-          "match": "(?<!\\S)(#)(import|module|style|else_if|if|else|endif|enum|assert|include)\\b",
+          "match": "(?<!\\S)(#)(import|module|style|else_if|elif|if|else|endif|enum|assert|include)\\b",
           "captures": {
             "1": {"name": "punctuation.definition.directive.kryon"},
             "2": {"name": "keyword.control.directive.kryon"}
@@ -40,7 +40,7 @@
         },
         {
           "name": "storage.modifier.kryon",
-          "match": "#(?:private|export|extern|ui|slot|type|intrinsic|host|global|defined|const)\\b"
+          "match": "#(?:private|export|extern|ui|slot|type|intrinsic|host|global|defined|const|attr)\\b"
         }
       ]
     },

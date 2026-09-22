@@ -2,7 +2,7 @@
   "name": "kryon-language",
   "displayName": "Kryon Language",
   "description": "Syntax highlighting and editor behavior for Kryon .kry files",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "kryonlabs",
   "license": "MIT",
   "repository": {
