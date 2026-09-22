@@ -2,7 +2,7 @@
   "name": "kryon-language",
   "displayName": "Kryon Language",
   "description": "Syntax highlighting and editor behavior for Kryon .kry files",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "kryonlabs",
   "license": "MIT",
   "repository": {
@@ -12,13 +12,20 @@
   "engines": {
     "vscode": "^1.80.0"
   },
-  "categories": ["Programming Languages"],
+  "categories": [
+    "Programming Languages"
+  ],
   "contributes": {
     "languages": [
       {
         "id": "kryon",
-        "aliases": ["Kryon", "kry"],
-        "extensions": [".kry"],
+        "aliases": [
+          "Kryon",
+          "kry"
+        ],
+        "extensions": [
+          ".kry"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -31,9 +38,12 @@
     ]
   },
   "scripts": {
+    "test": "node --test tests/*.test.mjs",
     "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
-    "@vscode/vsce": "^3.6.0"
+    "@vscode/vsce": "^3.6.0",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2"
   }
 }

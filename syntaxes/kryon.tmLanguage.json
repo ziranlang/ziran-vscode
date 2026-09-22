@@ -32,7 +32,7 @@
       "patterns": [
         {
           "name": "meta.preprocessor.kryon",
-          "match": "^\\s*(#)(import|module|style|if|else|endif|enum|assert|include)\\b",
+          "match": "(?<!\\S)(#)(import|module|style|else_if|if|else|endif|enum|assert|include)\\b",
           "captures": {
             "1": {"name": "punctuation.definition.directive.kryon"},
             "2": {"name": "keyword.control.directive.kryon"}

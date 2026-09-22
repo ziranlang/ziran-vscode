@@ -25,6 +25,7 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - run: npm test
       - run: npm run package
       - run: unzip -t kryon-language-*.vsix
       - uses: actions/upload-artifact@v6
