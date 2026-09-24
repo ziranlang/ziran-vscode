@@ -1,8 +1,8 @@
 {
-  "name": "kryon-language",
-  "displayName": "Kryon Language",
-  "description": "Syntax highlighting and editor behavior for Kryon .kry files",
-  "version": "0.1.2",
+  "name": "ziran-language",
+  "displayName": "Ziran Language",
+  "description": "Ziran syntax highlighting and automatic module import navigation",
+  "version": "0.2.0",
   "publisher": "kryonlabs",
   "license": "MIT",
   "repository": {
@@ -15,25 +15,38 @@
   "categories": [
     "Programming Languages"
   ],
+  "main": "./extension.cjs",
+  "activationEvents": ["onLanguage:ziran"],
   "contributes": {
+    "configuration": {
+      "title": "Ziran",
+      "properties": {
+        "ziran.modulePaths": {
+          "type": "array",
+          "default": [],
+          "items": { "type": "string" },
+          "description": "Additional module directories, relative to a workspace folder or absolute. Workspace modules and a sibling Ziran std directory are found automatically."
+        }
+      }
+    },
     "languages": [
       {
-        "id": "kryon",
+        "id": "ziran",
         "aliases": [
-          "Kryon",
-          "kry"
+          "Ziran",
+          "zi"
         ],
         "extensions": [
-          ".kry"
+          ".zi"
         ],
         "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
       {
-        "language": "kryon",
-        "scopeName": "source.kryon",
-        "path": "./syntaxes/kryon.tmLanguage.json"
+        "language": "ziran",
+        "scopeName": "source.ziran",
+        "path": "./syntaxes/ziran.tmLanguage.json"
       }
     ]
   },

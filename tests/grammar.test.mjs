@@ -14,15 +14,15 @@ const registry = new textmate.Registry({
     createOnigString: (source) => new oniguruma.OnigString(source),
   }),
   loadGrammar: async (scopeName) => {
-    if (scopeName !== 'source.kryon') {
+    if (scopeName !== 'source.ziran') {
       return null;
     }
-    const source = readFileSync('syntaxes/kryon.tmLanguage.json', 'utf8');
-    return textmate.parseRawGrammar(source, 'kryon.tmLanguage.json');
+    const source = readFileSync('syntaxes/ziran.tmLanguage.json', 'utf8');
+    return textmate.parseRawGrammar(source, 'ziran.tmLanguage.json');
   },
 });
 
-const grammar = await registry.loadGrammar('source.kryon');
+const grammar = await registry.loadGrammar('source.ziran');
 
 function scopesAt(line, index) {
   const { tokens } = grammar.tokenizeLine(line);
@@ -31,21 +31,20 @@ function scopesAt(line, index) {
   return token.scopes;
 }
 
-for (const directive of ['#else', '#else_if WEB', '#elif WEB']) {
-  test(`inline ${directive} leaves its opening brace visible to the editor`, () => {
-    const line = `    } ${directive} {`;
-    assert.ok(scopesAt(line, line.indexOf('#')).includes('meta.preprocessor.kryon'));
-    assert.ok(!scopesAt(line, line.lastIndexOf('{')).some((scope) => scope.startsWith('comment.')));
-  });
-}
-
-test('a function attribute does not hide its opening brace', () => {
-  const line = 'function :: () #export #attr "EMSCRIPTEN_KEEPALIVE" {';
-  assert.ok(scopesAt(line, line.indexOf('#attr')).includes('storage.modifier.kryon'));
+test('compile-time branch directive leaves its opening brace visible', () => {
+  const line = '    } else #if WEB {';
+  assert.ok(scopesAt(line, line.indexOf('#')).includes('meta.preprocessor.ziran'));
   assert.ok(!scopesAt(line, line.lastIndexOf('{')).some((scope) => scope.startsWith('comment.')));
+});
+
+test('Ziran foreign declaration and scalar types are highlighted', () => {
+  const line = 'Measure :: (value: float32) -> s32 #foreign host_api;';
+  assert.ok(scopesAt(line, line.indexOf('Measure')).includes('entity.name.function.ziran'));
+  assert.ok(scopesAt(line, line.indexOf('float32')).includes('storage.type.ziran'));
+  assert.ok(scopesAt(line, line.indexOf('#foreign')).includes('meta.preprocessor.ziran'));
 });
 
 test('ordinary hash comments remain comments', () => {
   const line = '    # explanation {';
-  assert.ok(scopesAt(line, line.lastIndexOf('{')).includes('comment.line.number-sign.kryon'));
+  assert.ok(scopesAt(line, line.lastIndexOf('{')).includes('comment.line.number-sign.ziran'));
 });

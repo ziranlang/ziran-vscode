@@ -27,11 +27,11 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run package
-      - run: unzip -t kryon-language-*.vsix
+      - run: unzip -t ziran-language-*.vsix
       - uses: actions/upload-artifact@v6
         with:
-          name: kryon-language-vsix
-          path: kryon-language-*.vsix
+          name: ziran-language-vsix
+          path: ziran-language-*.vsix
           if-no-files-found: error
 
   release:
@@ -44,14 +44,14 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v6
         with:
-          name: kryon-language-vsix
+          name: ziran-language-vsix
           path: dist
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=$(node -p "require('./package.json').version")
-          gh release create "v${version}" dist/kryon-language-*.vsix \
+          gh release create "v${version}" dist/ziran-language-*.vsix \
             --target "$GITHUB_SHA" \
-            --title "Kryon Language v${version}" \
+            --title "Ziran Language v${version}" \
             --generate-notes
