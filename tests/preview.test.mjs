@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 
 const require = createRequire(import.meta.url);
-const { activatePreview, generatedFiles, manifestPath, projectRoot, safeEnvironment } =
+const { activatePreview, generatedFiles, manifestPath, previewHtml,
+  projectRoot, safeEnvironment } =
   require('../preview.cjs');
 
 const disposable = { dispose() {} };
@@ -46,6 +48,13 @@ test('preview child processes cannot inherit the desktop display', () => {
   const environment = safeEnvironment();
   assert.equal(Object.hasOwn(environment, 'DISPLAY'), false);
   assert.equal(Object.hasOwn(environment, 'WAYLAND_DISPLAY'), false);
+});
+
+test('canvas preview webview script is valid', () => {
+  const html = previewHtml('nonce');
+  assert.match(html, /<canvas id="screen"/);
+  const script = html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1];
+  assert.doesNotThrow(() => new vm.Script(script));
 });
 
 test('preview runs the normal command and reloads generated views after save', async () => {
@@ -132,6 +141,7 @@ cat src/app.zi
     await waitFor(() => states.some((state) => state.status.startsWith('Up to date')));
     let state = states.at(-1);
     assert.equal(state.output, 'first frame');
+    assert.equal(state.frame, 'first frame\n');
     assert.equal(state.cSource, 'first frame\n');
     assert.equal(state.irSource, 'inspected IR\n');
 
@@ -140,6 +150,7 @@ cat src/app.zi
     await waitFor(() => states.at(-1)?.output === 'second frame');
     state = states.at(-1);
     assert.equal(state.cSource, 'second frame\n');
+    assert.equal(state.frame, 'second frame\n');
     assert.deepEqual(state.cFiles, ['app.c']);
     assert.deepEqual(state.irFiles, ['app.zir']);
   } finally {

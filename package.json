@@ -2,7 +2,7 @@
   "name": "ziran-language",
   "displayName": "Ziran Language",
   "description": "Ziran language support and live Kryon project preview",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "publisher": "kryonlabs",
   "license": "MIT",
   "repository": {
@@ -19,9 +19,22 @@
   "activationEvents": [
     "onLanguage:ziran",
     "onCommand:kryon.preview",
-    "workspaceContains:kryon.toml"
+    "workspaceContains:kryon.toml",
+    "onCustomEditor:ziran.zirViewer"
   ],
   "contributes": {
+    "customEditors": [
+      {
+        "viewType": "ziran.zirViewer",
+        "displayName": "Ziran Checked Module",
+        "selector": [
+          {
+            "filenamePattern": "*.zir"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
     "commands": [
       {
         "command": "kryon.preview",
@@ -50,6 +63,11 @@
           "type": "string",
           "default": "",
           "description": "Kryon project profile to preview. Empty uses the project's default profile."
+        },
+        "ziran.inspectorCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the ziran command used to inspect .zir files. Empty finds the project's Ziran checkout."
         },
         "ziran.modulePaths": {
           "type": "array",

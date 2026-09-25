@@ -3,6 +3,7 @@ const path = require('node:path');
 const vscode = require('vscode');
 const { importAt, moduleIds, resolveModule } = require('./module-index.cjs');
 const { activatePreview } = require('./preview.cjs');
+const { activateZirEditor } = require('./zir-editor.cjs');
 
 async function collect(directory, files) {
   let entries;
@@ -37,6 +38,7 @@ function moduleDirectories() {
 
 function activate(context) {
   activatePreview(context, vscode);
+  activateZirEditor(context, vscode);
   let cache;
   const invalidate = () => { cache = undefined; };
   const index = () => {

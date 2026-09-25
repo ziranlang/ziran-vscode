@@ -77,17 +77,55 @@ function previewHtml(nonce) {
   select { max-width: 100%; }
   #status { color: var(--vscode-descriptionForeground); }
   pre { box-sizing: border-box; overflow: auto; white-space: pre; font-family: var(--vscode-editor-font-family), monospace; font-size: var(--vscode-editor-font-size); line-height: 1.3; border: 1px solid var(--vscode-panel-border); padding: 10px; }
-  #output { min-height: 5em; }
+  .window { border: 1px solid var(--vscode-panel-border); border-radius: 8px; overflow: hidden; background: var(--vscode-terminal-background, #10141a); }
+  .window-bar { display: flex; align-items: center; gap: 6px; padding: 7px 10px; background: var(--vscode-titleBar-activeBackground, #252526); border-bottom: 1px solid var(--vscode-panel-border); }
+  .window-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--vscode-descriptionForeground); opacity: .55; }
+  #window-title { margin-left: 8px; font-size: .85rem; }
+  #screen { display: block; max-width: 100%; }
+  #build-output:empty { display: none; }
   details { margin-top: 16px; }
   summary { cursor: pointer; font-weight: bold; margin-bottom: 8px; }
 </style></head><body>
 <header><h1>Kryon Preview</h1><button id="run">Run again</button><span id="status">Starting…</span></header>
-<h2>Rendered output</h2><pre id="output"></pre>
+<h2>Rendered window</h2>
+<div class="window" id="window"><div class="window-bar"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><span id="window-title"></span></div><canvas id="screen" role="img" aria-label="Rendered terminal frame"></canvas></div>
+<pre id="build-output"></pre>
+<details><summary>Copyable text output</summary><pre id="output"></pre></details>
 <details><summary>Generated C</summary><select id="c-files" aria-label="Generated C module"></select><pre id="c-source"></pre></details>
 <details><summary>Checked .zir (inspected)</summary><select id="ir-files" aria-label="Checked Ziran module"></select><pre id="ir-source"></pre></details>
 <script nonce="${nonce}">
   const api = acquireVsCodeApi();
   const byId = (id) => document.getElementById(id);
+  let frame = '';
+  const draw = () => {
+    const canvas = byId('screen');
+    const columns = 80;
+    const rows = 24;
+    const cellWidth = Math.min(12, Math.max(4, byId('window').clientWidth / columns));
+    const cellHeight = cellWidth * 1.65;
+    const width = columns * cellWidth;
+    const height = rows * cellHeight;
+    const scale = window.devicePixelRatio || 1;
+    canvas.width = Math.ceil(width * scale);
+    canvas.height = Math.ceil(height * scale);
+    canvas.style.width = width + 'px';
+    canvas.style.height = height + 'px';
+    const context = canvas.getContext('2d');
+    context.setTransform(scale, 0, 0, scale, 0, 0);
+    const theme = getComputedStyle(document.documentElement);
+    context.fillStyle = theme.getPropertyValue('--vscode-terminal-background').trim() || '#10141a';
+    context.fillRect(0, 0, width, height);
+    context.fillStyle = theme.getPropertyValue('--vscode-terminal-foreground').trim() || '#d4d4d4';
+    context.font = Math.floor(cellHeight * .8) + 'px monospace';
+    context.textBaseline = 'top';
+    const lines = frame.split(/\\r?\\n/);
+    for (let row = 0; row < Math.min(rows, lines.length); row++) {
+      const glyphs = Array.from(lines[row]).slice(0, columns);
+      for (let col = 0; col < glyphs.length; col++) {
+        context.fillText(glyphs[col], col * cellWidth, row * cellHeight);
+      }
+    }
+  };
   const fill = (id, files, selected) => {
     const select = byId(id);
     select.replaceChildren();
@@ -104,6 +142,10 @@ function previewHtml(nonce) {
     if (data.type !== 'state') return;
     byId('status').textContent = data.status;
     byId('output').textContent = data.output;
+    byId('build-output').textContent = data.status.startsWith('Up to date') ? '' : data.output;
+    byId('window-title').textContent = data.project;
+    frame = data.frame;
+    draw();
     fill('c-files', data.cFiles, data.selectedC);
     fill('ir-files', data.irFiles, data.selectedIr);
     byId('c-source').textContent = data.cSource;
@@ -112,6 +154,7 @@ function previewHtml(nonce) {
   byId('run').addEventListener('click', () => api.postMessage({ type: 'run' }));
   byId('c-files').addEventListener('change', (event) => api.postMessage({ type: 'c', file: event.target.value }));
   byId('ir-files').addEventListener('change', (event) => api.postMessage({ type: 'ir', file: event.target.value }));
+  window.addEventListener('resize', draw);
   api.postMessage({ type: 'ready' });
 </script></body></html>`;
 }
@@ -124,7 +167,7 @@ class Preview {
     this.running = false;
     this.rerun = false;
     this.state = {
-      type: 'state', status: 'Starting…', output: '', cFiles: [], irFiles: [],
+      type: 'state', project: path.basename(root), status: 'Starting…', output: '', frame: '', cFiles: [], irFiles: [],
       selectedC: '', selectedIr: '', cSource: '', irSource: '',
     };
     this.panel = vscode.window.createWebviewPanel('kryonPreview',
@@ -217,6 +260,7 @@ class Preview {
       const result = await runCommand(command, args, this.root);
       if (this.disposed) return;
       this.state.output = (result.stdout + result.stderr).trimEnd();
+      this.state.frame = result.code === 0 ? result.stdout : '';
       this.state.status = result.code === 0 ? 'Up to date · reloads on save' :
         `Build or run failed${result.code === null ? '' : ` (exit ${result.code})`}`;
       if (result.code === 0) {
@@ -239,6 +283,7 @@ class Preview {
     } catch (error) {
       this.state.status = 'Preview failed';
       this.state.output = error.message;
+      this.state.frame = '';
       this.post();
     } finally {
       this.running = false;
@@ -304,4 +349,5 @@ function activatePreview(context, vscode) {
   }));
 }
 
-module.exports = { activatePreview, generatedFiles, manifestPath, projectRoot, safeEnvironment };
+module.exports = { activatePreview, generatedFiles, manifestPath, previewHtml,
+  projectRoot, runCommand, safeEnvironment };
