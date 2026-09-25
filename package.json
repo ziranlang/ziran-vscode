@@ -2,7 +2,7 @@
   "name": "ziran-language",
   "displayName": "Ziran Language",
   "description": "Ziran language support and live Kryon project preview",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "kryonlabs",
   "license": "MIT",
   "repository": {
@@ -18,7 +18,8 @@
   "main": "./extension.cjs",
   "activationEvents": [
     "onLanguage:ziran",
-    "onCommand:kryon.preview"
+    "onCommand:kryon.preview",
+    "workspaceContains:kryon.toml"
   ],
   "contributes": {
     "commands": [

@@ -249,6 +249,39 @@ class Preview {
 
 function activatePreview(context, vscode) {
   const previews = new Map();
+  const runButton = vscode.window.createStatusBarItem('kryon.run',
+    vscode.StatusBarAlignment.Left, 1000);
+  runButton.name = 'Run Kryon';
+  runButton.text = '$(play) Run Kryon';
+  runButton.tooltip = 'Run and preview this Kryon project beside the editor';
+  runButton.command = 'kryon.preview';
+  context.subscriptions.push(runButton);
+
+  const updateRunButton = async () => {
+    const locations = [];
+    if (vscode.window.activeTextEditor?.document.uri.scheme === 'file') {
+      locations.push(vscode.window.activeTextEditor.document.uri.fsPath);
+    }
+    for (const folder of vscode.workspace.workspaceFolders || []) locations.push(folder.uri.fsPath);
+    for (const location of locations) {
+      if (await projectRoot(location)) { runButton.show(); return; }
+    }
+    runButton.hide();
+  };
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor(updateRunButton),
+    vscode.workspace.onDidChangeWorkspaceFolders(updateRunButton),
+    vscode.languages.registerCodeLensProvider({ language: 'ziran', scheme: 'file' }, {
+      async provideCodeLenses(document) {
+        if (!(await projectRoot(document.uri.fsPath))) return [];
+        return [new vscode.CodeLens(new vscode.Range(0, 0, 0, 0), {
+          title: '▶ Run Kryon Preview', command: 'kryon.preview',
+        })];
+      },
+    }),
+  );
+  updateRunButton();
+
   context.subscriptions.push(vscode.commands.registerCommand('kryon.preview', async () => {
     const locations = [];
     if (vscode.window.activeTextEditor?.document.uri.scheme === 'file') {

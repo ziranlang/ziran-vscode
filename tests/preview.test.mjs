@@ -70,6 +70,8 @@ cat src/app.zi
 
     let previewCommand;
     let onSave;
+    let codeLensProvider;
+    let runButtonVisible = false;
     const states = [];
     const panel = {
       webview: {
@@ -87,8 +89,16 @@ cat src/app.zi
     };
     const vscode = {
       ViewColumn: { Beside: 2 },
+      StatusBarAlignment: { Left: 1 },
+      CodeLens: class { constructor(range, command) { this.range = range; this.command = command; } },
+      Range: class {},
       Uri: { file(fsPath) { return { fsPath }; } },
       RelativePattern: class {},
+      languages: { registerCodeLensProvider(selector, provider) {
+        assert.deepEqual(selector, { language: 'ziran', scheme: 'file' });
+        codeLensProvider = provider;
+        return disposable;
+      } },
       commands: { registerCommand(name, listener) {
         assert.equal(name, 'kryon.preview');
         previewCommand = listener;
@@ -97,10 +107,17 @@ cat src/app.zi
       window: {
         activeTextEditor: { document: { uri: { scheme: 'file', fsPath: source } } },
         createWebviewPanel() { return panel; },
+        createStatusBarItem() { return {
+          ...disposable,
+          show() { runButtonVisible = true; },
+          hide() { runButtonVisible = false; },
+        }; },
+        onDidChangeActiveTextEditor() { return disposable; },
       },
       workspace: {
         workspaceFolders: [{ uri: { fsPath: root } }],
         createFileSystemWatcher() { return watcher; },
+        onDidChangeWorkspaceFolders() { return disposable; },
         onDidSaveTextDocument(listener) { onSave = listener; return disposable; },
         getConfiguration() { return { get(name, fallback) {
           return name === 'kryonCommand' ? commandPath : fallback;
@@ -108,6 +125,9 @@ cat src/app.zi
       },
     };
     activatePreview({ subscriptions: [] }, vscode);
+    await waitFor(() => runButtonVisible);
+    const lenses = await codeLensProvider.provideCodeLenses({ uri: { fsPath: source } });
+    assert.equal(lenses[0].command.command, 'kryon.preview');
     await previewCommand();
     await waitFor(() => states.some((state) => state.status.startsWith('Up to date')));
     let state = states.at(-1);

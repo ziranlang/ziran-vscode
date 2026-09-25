@@ -9,9 +9,10 @@ This is language support for any Ziran project; it does not bundle Kryon widgets
 
 ## Kryon preview
 
-Open a Kryon app folder containing `kryon.toml`, then open a `.zi` file and
-click the **Preview** play button in the editor title. **Kryon: Preview** is
-also available in the Command Palette. The rendered terminal output appears
+Open a Kryon app folder containing `kryon.toml`, then click **Run Kryon** in
+the lower-left status bar. A **Run Kryon Preview** link also appears above
+Ziran source, and **Kryon: Preview** is available in the Command Palette.
+The rendered terminal output appears
 beside the source. Saving a file under `src/` or changing `kryon.toml` rebuilds
 and reruns the app after a short delay. **Run again** refreshes it on demand.
 
