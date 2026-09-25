@@ -5,3 +5,4 @@ tests/**
 .gitignore
 *.vsix
 package-lock.json
+update_version.sh

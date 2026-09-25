@@ -7,6 +7,24 @@ workspace. The extension also finds the standard modules in a sibling `ziran/std
 directory, so a Kryon workspace can import them without listing every module.
 This is language support for any Ziran project; it does not bundle Kryon widgets.
 
+## Kryon preview
+
+Open a Kryon app folder containing `kryon.toml`, then open a `.zi` file and
+click the **Preview** play button in the editor title. **Kryon: Preview** is
+also available in the Command Palette. The rendered terminal output appears
+beside the source. Saving a file under `src/` or changing `kryon.toml` rebuilds
+and reruns the app after a short delay. **Run again** refreshes it on demand.
+
+The preview executes the project's normal `kryon run` command. Its **Generated
+C** and **Checked .zir** sections show the modules from that build; selecting a
+module updates the source or Ziran inspector view. The `.zir` representation is
+the current checked intermediate format. Kryon's old KIR format is no longer
+used. The preview uses the `~/.local/bin/kryon` launcher if present, then
+`kryon` from `PATH`. Set `ziran.kryonCommand` for a custom launcher, and
+`ziran.previewProfile` to select a non-default profile. A sibling Ziran
+checkout is used for `.zir` inspection unless `[paths].ziran` names another.
+The preview's child processes do not inherit the desktop display.
+
 For module directories outside the workspace, set `ziran.modulePaths` in VS Code
 settings. Paths may be absolute or relative to the workspace folder. The
 compiler still needs the corresponding `--module-path` arguments when building.

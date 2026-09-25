@@ -2,6 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const vscode = require('vscode');
 const { importAt, moduleIds, resolveModule } = require('./module-index.cjs');
+const { activatePreview } = require('./preview.cjs');
 
 async function collect(directory, files) {
   let entries;
@@ -35,6 +36,7 @@ function moduleDirectories() {
 }
 
 function activate(context) {
+  activatePreview(context, vscode);
   let cache;
   const invalidate = () => { cache = undefined; };
   const index = () => {

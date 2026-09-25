@@ -1,8 +1,8 @@
 {
   "name": "ziran-language",
   "displayName": "Ziran Language",
-  "description": "Ziran syntax highlighting and automatic module import navigation",
-  "version": "0.2.0",
+  "description": "Ziran language support and live Kryon project preview",
+  "version": "0.3.0",
   "publisher": "kryonlabs",
   "license": "MIT",
   "repository": {
@@ -16,15 +16,46 @@
     "Programming Languages"
   ],
   "main": "./extension.cjs",
-  "activationEvents": ["onLanguage:ziran"],
+  "activationEvents": [
+    "onLanguage:ziran",
+    "onCommand:kryon.preview"
+  ],
   "contributes": {
+    "commands": [
+      {
+        "command": "kryon.preview",
+        "title": "Kryon: Preview",
+        "icon": "$(play)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "kryon.preview",
+          "when": "resourceExtname == .zi",
+          "group": "navigation@1"
+        }
+      ]
+    },
     "configuration": {
       "title": "Ziran",
       "properties": {
+        "ziran.kryonCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the kryon launcher for project previews. Empty uses ~/.local/bin/kryon when present, then PATH."
+        },
+        "ziran.previewProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Kryon project profile to preview. Empty uses the project's default profile."
+        },
         "ziran.modulePaths": {
           "type": "array",
           "default": [],
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Additional module directories, relative to a workspace folder or absolute. Workspace modules and a sibling Ziran std directory are found automatically."
         }
       }
