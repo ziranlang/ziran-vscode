@@ -2,7 +2,7 @@
   "name": "ziran-language",
   "displayName": "Ziran Language",
   "description": "Ziran language support, generated code preview for every target, and Kryon project preview",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "publisher": "kryonlabs",
   "license": "MIT",
   "repository": {

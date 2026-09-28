@@ -1,5 +1,13 @@
 # Changes
 
+## 0.5.0
+
+- Check `.zi` files on open and save, with errors in the Problems panel.
+- Work with a single `.zi` file: imports resolve from its folder and Ziran's standard modules, without a Kryon project.
+- Preview the C, C++, Go, Rust, and Plan 9 C generated for a file with **Ziran: Preview Generated Code**, and choose which targets it shows.
+- Show the Kryon preview button only in projects with a `kryon.toml`.
+- Use one `ziran.command` setting for checking, previews, and `.zir` browsing.
+
 ## 0.4.1
 
 - Highlight `//` and `/* */` comments correctly, including apostrophes in comments.
