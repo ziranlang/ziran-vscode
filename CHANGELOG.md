@@ -1,5 +1,10 @@
 # Changes
 
+## 0.6.0
+
+- Show generated code and the checked `.zir` directly under the program output in the Run pane, like the Kryon preview, instead of in a separate tab.
+- Highlight C, C++, Go, Rust, Plan 9 C, and inspected `.zir` in the Run pane.
+
 ## 0.5.3
 
 - Show a run's output in a Run pane beside the source, like the Kryon preview, and rerun it on save.

@@ -3,7 +3,7 @@ const path = require('node:path');
 const vscode = require('vscode');
 const { importAt, moduleIds, resolveModule } = require('./module-index.cjs');
 const { activatePreview, runCommand } = require('./preview.cjs');
-const { activateTargets, commandStd, modulePaths, ziranCommand } = require('./targets.cjs');
+const { commandStd, modulePaths, ziranCommand } = require('./targets.cjs');
 const { activateRun } = require('./run.cjs');
 const { activateZirEditor } = require('./zir-editor.cjs');
 
@@ -87,7 +87,6 @@ async function checkDocument(document, diagnostics) {
 
 function activate(context) {
   activatePreview(context, vscode);
-  activateTargets(context, vscode);
   activateRun(context, vscode);
   activateZirEditor(context, vscode);
   const diagnostics = vscode.languages.createDiagnosticCollection('ziran');

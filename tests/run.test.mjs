@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { test } from 'node:test';
 
 const require = createRequire(import.meta.url);
-const { activateRun, mainLine, runHtml, runSteps } = require('../run.cjs');
+const { HIGHLIGHT_SOURCE, activateRun, mainLine, runHtml, runSteps } = require('../run.cjs');
 
 const disposable = { dispose() {} };
 const compiler = path.resolve('../ziran/build/bin/ziran');
@@ -56,8 +56,9 @@ function fakeVscode(file, command, source) {
       workspaceFolders: [],
       getWorkspaceFolder() { return undefined; },
       onDidSaveTextDocument(listener) { onSave = listener; return disposable; },
+        onDidChangeConfiguration() { return disposable; },
       getConfiguration() { return { get(name, fallback) {
-        return name === 'command' ? command : fallback;
+        return name === 'command' ? command : name === 'previewTargets' ? ['c', 'rust'] : fallback;
       } }; },
     },
   };
@@ -103,8 +104,6 @@ test('run pane shows a build failure instead of output', async () => {
     assert.equal(state.failed, true);
     assert.equal(state.output, '');
     assert.match(state.problems, /broken/);
-    fake.send({ type: 'code' });
-    assert.deepEqual(fake.executed.at(-1), ['ziran.previewTargets', { fsPath: file }]);
   } finally {
     fake.close();
     await fs.rm(directory, { recursive: true, force: true });
@@ -119,8 +118,14 @@ test('run pane shows hello world output and reruns on save', { skip: !existsSync
   try {
     await fake.commands['ziran.run']();
     await waitFor(() => fake.states.at(-1)?.status.startsWith('Up to date'));
-    assert.equal(fake.states.at(-1).output, 'Hello, World!\n');
-    assert.equal(fake.states.at(-1).title, 'hello.zi');
+    await waitFor(() => !fake.states.at(-1)?.codeRunning);
+    const state = fake.states.at(-1);
+    assert.equal(state.output, 'Hello, World!\n');
+    assert.equal(state.title, 'hello.zi');
+    assert.deepEqual(state.results.map((result) => [result.id, result.ok]), [['c', true], ['rust', true]]);
+    assert.match(state.results[0].files[0].text, /Hello, World!/);
+    assert.equal(state.irModules[0].name, 'hello.zir');
+    assert.match(state.irModules[0].text, /function main\(\) -> void/);
     await fs.writeFile(file, 'main :: () {\n    print("% + % = %\\n", 40, 2, 40 + 2);\n}\n');
     fake.save(file);
     await waitFor(() => fake.states.at(-1)?.output === '40 + 2 = 42\n');
@@ -128,4 +133,23 @@ test('run pane shows hello world output and reruns on save', { skip: !existsSync
     fake.close();
     await fs.rm(directory, { recursive: true, force: true });
   }
+});
+
+test('generated code and inspected IR are highlighted', () => {
+  const sandbox = {};
+  vm.runInNewContext(HIGHLIGHT_SOURCE + '\nthis.highlight = highlight; this.languageOf = languageOf;', sandbox);
+  const c = sandbox.highlight('int32_t main(void) { return 42; } // done <x>\n#include "a.h"', 'c');
+  assert.match(c, /<span class="tok-type">int32_t<\/span>/);
+  assert.match(c, /<span class="tok-function">main<\/span>\(/);
+  assert.match(c, /<span class="tok-keyword">return<\/span>/);
+  assert.match(c, /<span class="tok-number">42<\/span>/);
+  assert.match(c, /<span class="tok-comment">\/\/ done &lt;x&gt;<\/span>/);
+  assert.match(c, /<span class="tok-directive">#include<\/span>/);
+  const rust = sandbox.highlight('pub fn main() { let s = "x"; }', 'rust');
+  assert.match(rust, /<span class="tok-keyword">fn<\/span>/);
+  assert.match(rust, /<span class="tok-string">"x"<\/span>/);
+  assert.match(sandbox.highlight('%2 call type=void', 'zir'), /<span class="tok-number">%2<\/span>/);
+  assert.equal(sandbox.highlight('<b>', ''), '&lt;b&gt;');
+  assert.equal(sandbox.languageOf('src/main.rs'), 'rust');
+  assert.equal(sandbox.languageOf('hello.hpp'), 'cpp');
 });

@@ -2,7 +2,7 @@
   "name": "ziran-language",
   "displayName": "Ziran Language",
   "description": "Ziran language support, generated code preview for every target, and Kryon project preview",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "publisher": "kryonlabs",
   "license": "MIT",
   "repository": {
@@ -20,7 +20,6 @@
     "onLanguage:ziran",
     "onCommand:kryon.preview",
     "onCommand:ziran.run",
-    "onCommand:ziran.previewTargets",
     "workspaceContains:kryon.toml",
     "onCustomEditor:ziran.zirViewer"
   ],
@@ -44,11 +43,6 @@
         "icon": "$(play)"
       },
       {
-        "command": "ziran.previewTargets",
-        "title": "Ziran: Preview Generated Code",
-        "icon": "$(file-code)"
-      },
-      {
         "command": "kryon.preview",
         "title": "Kryon: Preview",
         "icon": "$(play)"
@@ -60,11 +54,6 @@
           "command": "ziran.run",
           "when": "resourceExtname == .zi && !ziran.kryonProject",
           "group": "navigation@0"
-        },
-        {
-          "command": "ziran.previewTargets",
-          "when": "resourceExtname == .zi",
-          "group": "navigation@1"
         },
         {
           "command": "kryon.preview",
@@ -107,7 +96,7 @@
             ]
           },
           "uniqueItems": true,
-          "description": "Targets shown by Ziran: Preview Generated Code. The preview's checkboxes update this setting."
+          "description": "Targets whose generated code the Run pane shows. The pane's checkboxes update this setting."
         },
         "ziran.modulePaths": {
           "type": "array",

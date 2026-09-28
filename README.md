@@ -11,14 +11,21 @@ and the Ziran checkout's `std` are searched for imports.
 
 ## Running
 
-Click ▶ in the editor title bar, or **▶ Run** above `main`, to run a `.zi` file
-that declares `main :: () { ... }`. A **Run** pane opens beside the source and
-shows the program's output in a window, with the run time and any build or
-runtime errors below it. Saving a `.zi` file in the same directory reruns it;
-**Run again** reruns on demand and **Generated code** opens the target preview.
-The file is bundled with `ziran bundle --entry module:main` and run with
-`ziran run` on the portable runtime; a run stops after 10 seconds. In Kryon
-projects the ▶ button runs the Kryon preview instead.
+Click ▶ in the editor title bar, or **▶ Run** above `main`, to open the **Run**
+pane beside a `.zi` file. Like the Kryon preview it shows, top to bottom:
+
+- the program's output in a window, with the run time and any build or runtime
+  errors below it (a run stops after 10 seconds);
+- **Generated code**: the C, C++, Go, Rust, and Plan 9 C that `ziran build`
+  writes, one tab per target with syntax highlighting and a file picker; the
+  checkboxes choose the targets and save them to `ziran.previewTargets`;
+- **Checked .zir (inspected)**: the checked modules, highlighted.
+
+Saving a `.zi` file in the same directory reruns everything; **Run again** does
+it on demand. A file without `main :: ()` still shows its generated code and
+`.zir`. The program is bundled with `ziran bundle --entry module:main` and run
+with `ziran run` on the portable runtime. In Kryon projects ▶ runs the Kryon
+preview instead.
 
 ## Checking
 
@@ -26,23 +33,9 @@ Opening or saving a `.zi` file runs `ziran check` on it and lists any errors in
 the **Problems** panel and under the source. A file checks with its own
 directory as the root, as `ziran check --root . file.zi` would.
 
-## Generated code preview
-
-Click the **Ziran: Preview Generated Code** button in the editor title bar of
-any `.zi` file. The panel beside the source shows the C, C++, Go, Rust, and
-Plan 9 C that `ziran build` generates, one tab per target, with a file picker
-for targets that write several files. It rebuilds when a `.zi` file in the same
-directory is saved; **Rebuild** runs it on demand. A target that fails shows its
-diagnostics in its tab instead of code.
-
-The checkboxes choose which targets to generate and save the choice to the
-`ziran.previewTargets` setting (workspace folder, or user settings for a file
-outside any folder). The `.zir` checked module is the same for every target, so
-the panel shows only target code; open a saved `.zir` file to browse it.
-
 ## Finding the compiler
 
-Checking, the generated code preview, and `.zir` browsing use the `ziran`
+Checking, the Run pane, and `.zir` browsing use the `ziran`
 command from `ziran.command` when set. Otherwise they use a Ziran checkout's
 `build/bin/ziran` found above the file, in a Kryon project's `[paths].ziran`,
 or beside the workspace folder, then `~/.local/bin/ziran`, then `PATH`.

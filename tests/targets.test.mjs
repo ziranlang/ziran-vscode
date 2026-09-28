@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { test } from 'node:test';
 
 const require = createRequire(import.meta.url);
-const { TARGETS, activateTargets, buildArgs, commandStd, targetsHtml, ziranCommand } =
+const { TARGETS, buildArgs, buildTarget, commandStd, ziranCommand } =
   require('../targets.cjs');
 
 const disposable = { dispose() {} };
@@ -29,11 +29,6 @@ test('a single file builds with its own directory as root', () => {
   assert.deepEqual(TARGETS.map((target) => target.id), ['c', 'cpp', 'go', 'rust', 'plan9-c']);
 });
 
-test('target preview webview script is valid', () => {
-  const script = targetsHtml('nonce').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1];
-  assert.doesNotThrow(() => new vm.Script(script));
-});
-
 test('a file outside any Kryon project finds the Ziran checkout above it', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ziran-targets-find-'));
   try {
@@ -53,14 +48,12 @@ test('a file outside any Kryon project finds the Ziran checkout above it', async
   }
 });
 
-test('preview builds the chosen targets for one file and rebuilds on save', async () => {
+test('a target build lists its files with module source first', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ziran-targets-'));
-  let closePanel;
   try {
     const file = path.join(directory, 'hello.zi');
     const command = path.join(directory, 'fake-ziran');
     await fs.writeFile(file, 'first\n');
-    // Writes one file named after the target, or fails for plan9-c.
     await fs.writeFile(command, `#!/bin/sh
 target=
 output=
@@ -73,76 +66,20 @@ while [ $# -gt 0 ]; do
   shift
 done
 if [ "$target" = plan9-c ]; then echo "hello.zi:1:1: unsupported" >&2; exit 1; fi
-mkdir -p "$output/src"
+mkdir -p "$output/target"
 cp "$source" "$output/hello.$target"
 echo runtime > "$output/runtime.h"
-mkdir -p "$output/target" && echo skip > "$output/target/ignored"
+echo skip > "$output/target/ignored"
 `, { mode: 0o755 });
-
-    let targetsCommand;
-    let onSave;
-    let onMessage;
-    const updates = [];
-    const states = [];
-    let enabled = ['c', 'go', 'plan9-c'];
-    const panel = {
-      webview: {
-        postMessage(state) { states.push(structuredClone(state)); },
-        onDidReceiveMessage(listener) { onMessage = listener; return disposable; },
-      },
-      onDidDispose(listener) { closePanel = listener; return disposable; },
-      reveal() {},
-    };
-    const vscode = {
-      ViewColumn: { Beside: 2 },
-      ConfigurationTarget: { Global: 1, WorkspaceFolder: 3 },
-      Uri: { file(fsPath) { return { fsPath }; } },
-      commands: { registerCommand(name, listener) {
-        assert.equal(name, 'ziran.previewTargets');
-        targetsCommand = listener;
-        return disposable;
-      } },
-      window: {
-        activeTextEditor: { document: { uri: { fsPath: file } } },
-        createWebviewPanel() { return panel; },
-      },
-      workspace: {
-        workspaceFolders: [],
-        getWorkspaceFolder() { return undefined; },
-        onDidSaveTextDocument(listener) { onSave = listener; return disposable; },
-        onDidChangeConfiguration() { return disposable; },
-        getConfiguration() { return {
-          get(name, fallback) {
-            if (name === 'command') return command;
-            if (name === 'previewTargets') return enabled;
-            return fallback;
-          },
-          async update(name, value, scope) { updates.push({ name, value, scope }); enabled = value; },
-        }; },
-      },
-    };
-    activateTargets({ subscriptions: [] }, vscode);
-    await targetsCommand();
-    await waitFor(() => states.at(-1)?.status.includes('failed'));
-    let state = states.at(-1);
-    assert.deepEqual(state.enabled, ['c', 'go', 'plan9-c']);
-    assert.deepEqual(state.results.map((result) => [result.id, result.ok]),
-      [['c', true], ['go', true], ['plan9-c', false]]);
-    assert.equal(state.status, '1 of 3 targets failed');
-    assert.deepEqual(state.results[0].files.map((item) => item.name), ['hello.c', 'runtime.h']);
-    assert.equal(state.results[0].files[0].text, 'first\n');
-    assert.match(state.results[2].message, /unsupported/);
-
-    await onMessage({ type: 'targets', enabled: ['rust', 'c'] });
-    assert.deepEqual(updates, [{ name: 'previewTargets', value: ['c', 'rust'], scope: 1 }]);
-    await fs.writeFile(file, 'second\n');
-    onSave({ uri: { fsPath: file } });
-    await waitFor(() => states.at(-1)?.results.map((result) => result.id).join() === 'c,rust' &&
-      states.at(-1).status.startsWith('Up to date'));
-    state = states.at(-1);
-    assert.equal(state.results[0].files[0].text, 'second\n');
+    const work = path.join(directory, 'work');
+    const built = await buildTarget(command, 'c', file, work, []);
+    assert.equal(built.ok, true);
+    assert.deepEqual(built.files.map((item) => item.name), ['hello.c', 'runtime.h']);
+    assert.equal(built.files[0].text, 'first\n');
+    const failed = await buildTarget(command, 'plan9-c', file, work, []);
+    assert.equal(failed.ok, false);
+    assert.match(failed.message, /unsupported/);
   } finally {
-    closePanel?.();
     await fs.rm(directory, { recursive: true, force: true });
   }
 });
