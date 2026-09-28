@@ -2,9 +2,10 @@
   "name": "ziran-language",
   "displayName": "Ziran Language",
   "description": "Ziran language support, generated code preview for every target, and Kryon project preview",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "publisher": "kryonlabs",
   "license": "MIT",
+  "icon": "icons/extension.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/ziranlang/ziran-vscode.git"
@@ -128,7 +129,37 @@
         "extensions": [
           ".zi"
         ],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/zi.svg",
+          "dark": "./icons/zi.svg"
+        }
+      },
+      {
+        "id": "ziran-module",
+        "aliases": [
+          "Ziran Checked Module"
+        ],
+        "extensions": [
+          ".zir"
+        ],
+        "icon": {
+          "light": "./icons/zir.svg",
+          "dark": "./icons/zir.svg"
+        }
+      },
+      {
+        "id": "ziran-bundle",
+        "aliases": [
+          "Ziran Bundle"
+        ],
+        "extensions": [
+          ".zib"
+        ],
+        "icon": {
+          "light": "./icons/zib.svg",
+          "dark": "./icons/zib.svg"
+        }
       }
     ],
     "grammars": [

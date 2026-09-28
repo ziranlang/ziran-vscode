@@ -1,5 +1,9 @@
 # Changes
 
+## 0.6.2
+
+- Show the Ziran logo as the file icon for `.zi` sources, with blue and brown variants for checked `.zir` modules and `.zib` bundles, and as the extension icon.
+
 ## 0.6.1
 
 - Show Plan 9 C as 9c, right after C++, in the generated code tabs.

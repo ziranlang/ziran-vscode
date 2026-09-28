@@ -67,3 +67,14 @@ test('the extension activates and registers every contributed command', () => {
     assert.ok(registered.includes(command), `${command} is not registered`);
   }
 });
+
+test('.zi, .zir, and .zib files and the extension itself have icons', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const exists = (file) => readFileSync(new URL(`../${file}`, import.meta.url)).length > 0;
+  assert.ok(exists(manifest.icon));
+  for (const extension of ['.zi', '.zir', '.zib']) {
+    const language = manifest.contributes.languages.find((entry) => entry.extensions.includes(extension));
+    assert.ok(language?.icon, `${extension} has no icon`);
+    assert.ok(exists(language.icon.light) && exists(language.icon.dark));
+  }
+});
