@@ -2,9 +2,9 @@
   "name": "Ziran",
   "scopeName": "source.ziran",
   "patterns": [
-    {"include": "#strings"},
     {"include": "#directives"},
     {"include": "#comments"},
+    {"include": "#strings"},
     {"include": "#declarations"},
     {"include": "#types"},
     {"include": "#numbers"},
@@ -42,7 +42,14 @@
     },
     "comments": {
       "patterns": [
+        {"name": "comment.line.double-slash.ziran", "match": "//.*$"},
+        {"include": "#block_comment"},
         {"name": "comment.line.number-sign.ziran", "match": "#.*$"}
+      ]
+    },
+    "block_comment": {
+      "patterns": [
+        {"name": "comment.block.ziran", "begin": "/\\*", "end": "\\*/", "patterns": [{"include": "#block_comment"}]}
       ]
     },
     "declarations": {

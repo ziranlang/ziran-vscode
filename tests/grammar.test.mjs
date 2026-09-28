@@ -48,3 +48,21 @@ test('ordinary hash comments remain comments', () => {
   const line = '    # explanation {';
   assert.ok(scopesAt(line, line.lastIndexOf('{')).includes('comment.line.number-sign.ziran'));
 });
+
+test('apostrophes in line comments do not turn following code into a string', () => {
+  const comment = grammar.tokenizeLine("// ATR2's archive layout");
+  assert.ok(comment.tokens.every(({ scopes }) => scopes.includes('comment.line.double-slash.ziran')));
+
+  const code = grammar.tokenizeLine('Candle :: struct {', comment.ruleStack);
+  const candle = code.tokens.find(({ startIndex, endIndex }) => startIndex <= 0 && 0 < endIndex);
+  assert.ok(candle.scopes.includes('entity.name.function.ziran'));
+  assert.ok(!candle.scopes.some((scope) => scope.startsWith('string.')));
+});
+
+test('nested block comments end before following declarations', () => {
+  const state = grammar.tokenizeLine("/* outer /* inner ' */ still outer", null).ruleStack;
+  const end = grammar.tokenizeLine('*/ Candle :: struct {', state);
+  const candle = end.tokens.find(({ startIndex, endIndex }) => startIndex <= 3 && 3 < endIndex);
+  assert.ok(candle.scopes.includes('entity.name.function.ziran'));
+  assert.ok(!candle.scopes.some((scope) => scope.startsWith('comment.')));
+});

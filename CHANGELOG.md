@@ -1,5 +1,10 @@
 # Changes
 
+## 0.4.1
+
+- Highlight `//` and `/* */` comments correctly, including apostrophes in comments.
+- Use Ziran's comment syntax when toggling comments in the editor.
+
 ## 0.4.0
 
 - Open `.zir` files as readable, searchable modules with an outline and hex view.

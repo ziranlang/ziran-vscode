@@ -2,12 +2,12 @@
   "name": "ziran-language",
   "displayName": "Ziran Language",
   "description": "Ziran language support, generated code preview for every target, and Kryon project preview",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "kryonlabs",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kryonlabs/kryon-vscode.git"
+    "url": "https://github.com/ziranlang/ziran-vscode.git"
   },
   "engines": {
     "vscode": "^1.80.0"

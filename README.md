@@ -70,7 +70,7 @@ If several files have the same module name, Go to Definition offers every match.
 
 ## Install
 
-Download the `.vsix` from the [latest GitHub Release](https://github.com/kryonlabs/kryon-vscode/releases/latest), then run:
+Download the `.vsix` from the [latest GitHub Release](https://github.com/ziranlang/ziran-vscode/releases/latest), then run:
 
 ```sh
 code --install-extension ziran-language-*.vsix
