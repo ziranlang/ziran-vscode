@@ -9,6 +9,7 @@ const TARGETS = [
   { id: 'plan9-c', label: '9c' },
   { id: 'go', label: 'Go' },
   { id: 'rust', label: 'Rust' },
+  { id: 'py', label: 'Python' },
 ];
 
 async function exists(file) {
@@ -98,7 +99,7 @@ async function listFiles(directory, prefix = '') {
 
 // Put the module's own source first, then headers, then runtime support.
 function rank(file) {
-  if (/\.(c|cpp|go|rs)$/.test(file) && !/runtime/.test(file)) return 0;
+  if (/\.(c|cpp|go|rs|py)$/.test(file) && !/runtime/.test(file)) return 0;
   if (/\.(h|hpp)$/.test(file) && !/runtime/.test(file)) return 1;
   return 2;
 }

@@ -155,6 +155,11 @@ test('generated code and inspected IR are highlighted', () => {
   assert.match(sandbox.highlight('%2 call type=void', 'zir'), /<span class="tok-number">%2<\/span>/);
   assert.equal(sandbox.highlight('<b>', ''), '&lt;b&gt;');
   assert.equal(sandbox.languageOf('src/main.rs'), 'rust');
+  assert.equal(sandbox.languageOf('out/__init__.py'), 'py');
+  const python = sandbox.highlight('def main():  # start\n    return "x"', 'py');
+  assert.match(python, /<span class="tok-keyword">def<\/span>/);
+  assert.match(python, /<span class="tok-comment"># start<\/span>/);
+  assert.match(python, /<span class="tok-string">"x"<\/span>/);
   assert.equal(sandbox.languageOf('hello.hpp'), 'cpp');
 });
 

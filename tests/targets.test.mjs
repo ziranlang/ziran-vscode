@@ -26,7 +26,7 @@ test('a single file builds with its own directory as root', () => {
       '-o', '/tmp/out/go', '/notes/hello.zi']);
   assert.equal(commandStd('/work/ziran/build/bin/ziran'), '/work/ziran/std');
   assert.equal(commandStd('/home/me/.local/bin/ziran'), null);
-  assert.deepEqual(TARGETS.map((target) => target.id), ['c', 'cpp', 'plan9-c', 'go', 'rust']);
+  assert.deepEqual(TARGETS.map((target) => target.id), ['c', 'cpp', 'plan9-c', 'go', 'rust', 'py']);
 });
 
 test('a file outside any Kryon project finds the Ziran checkout above it', async () => {

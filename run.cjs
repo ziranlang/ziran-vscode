@@ -53,6 +53,7 @@ const KEYWORDS = {
   cpp: 'auto break case char const constexpr continue default delete do double else enum explicit extern false float for friend goto if inline int long namespace new noexcept nullptr operator private protected public return short signed sizeof static static_cast struct switch template this true typedef typename union unsigned using virtual void volatile while bool',
   go: 'break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var true false nil',
   rust: 'as break const continue crate else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while',
+  py: 'and as assert break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield None True False',
   zir: 'module function stmt expr global type define import from',
 };
 const TYPES = /^(u?int(8|16|32|64)_t|size_t|String|Slice|u8|u16|u32|u64|usize|i8|i16|i32|i64|isize|f32|f64|s8|s16|s32|s64|float32|float64|string|bool|int8|int16|int32|int64|uint8|uint16|uint32|uint64|float|double|byte|rune|str)$/;
@@ -64,13 +65,18 @@ function languageOf(name) {
   if (/\.(cpp|hpp)$/.test(name)) return 'cpp';
   if (/\.go$/.test(name)) return 'go';
   if (/\.rs$/.test(name)) return 'rust';
+  if (/\.py$/.test(name)) return 'py';
   if (/\.(c|h)$/.test(name)) return 'c';
   return '';
 }
 function highlight(text, language) {
   if (!KEYWORDS[language]) return escapeHtml(text);
   const keywords = new Set(KEYWORDS[language].split(' '));
-  const token = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.){1,8}')|(^[ \t]*#[a-z]+)|(%\d+|\b0[xX][0-9a-fA-F]+[uUlL]*\b|\b\d+(?:\.\d+)?(?:[eE][-+]?\d+)?[uUlLf]*\b)|([A-Za-z_][A-Za-z0-9_]*)(\s*\()?/gm;
+  // Python comments start with #, and its strings can be triple-quoted.
+  const python = language === 'py';
+  const token = python ?
+    /(#[^\n]*)|("""[\s\S]*?"""|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')|(a^)|(\b0[xX][0-9a-fA-F]+\b|\b\d+(?:\.\d+)?(?:[eE][-+]?\d+)?\b)|([A-Za-z_][A-Za-z0-9_]*)(\s*\()?/gm :
+    /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.){1,8}')|(^[ \t]*#[a-z]+)|(%\d+|\b0[xX][0-9a-fA-F]+[uUlL]*\b|\b\d+(?:\.\d+)?(?:[eE][-+]?\d+)?[uUlLf]*\b)|([A-Za-z_][A-Za-z0-9_]*)(\s*\()?/gm;
   let html = '';
   let last = 0;
   for (const match of text.matchAll(token)) {

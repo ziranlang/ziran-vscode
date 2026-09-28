@@ -16,7 +16,7 @@ pane beside a `.zi` file. Like the Kryon preview it shows, top to bottom:
 
 - the program's output in a window, with the run time and any build or runtime
   errors below it (a run stops after 10 seconds);
-- **Generated code**: the C, C++, Plan 9 C (9c), Go, and Rust that `ziran build`
+- **Generated code**: the C, C++, Plan 9 C (9c), Go, Rust, and Python that `ziran build`
   writes, one tab per target with syntax highlighting and a file picker; the
   checkboxes choose the targets and save them to `ziran.previewTargets`;
 - **Checked .zir (inspected)**: the checked modules, highlighted.

@@ -1,5 +1,9 @@
 # Changes
 
+## 0.6.3
+
+- Show Python, from `ziran build --target=py`, as a tab in the Run pane's generated code, with highlighting and a checkbox in `ziran.previewTargets`.
+
 ## 0.6.2
 
 - Show the Ziran logo as the file icon for `.zi` sources, with blue and brown variants for checked `.zir` modules and `.zib` bundles, and as the extension icon.
