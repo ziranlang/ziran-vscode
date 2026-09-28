@@ -6,10 +6,40 @@ statements. Modules are discovered from `.zi` and `.zir` files in the open
 workspace. The extension also finds the standard modules in a sibling `ziran/std`
 directory, so a Kryon workspace can import them without listing every module.
 This is language support for any Ziran project; it does not bundle Kryon widgets.
+A single `.zi` file works without a folder or `kryon.toml`: its own directory
+and the Ziran checkout's `std` are searched for imports.
+
+## Checking
+
+Opening or saving a `.zi` file runs `ziran check` on it and lists any errors in
+the **Problems** panel and under the source. A file checks with its own
+directory as the root, as `ziran check --root . file.zi` would.
+
+## Generated code preview
+
+Click the **Ziran: Preview Generated Code** button in the editor title bar of
+any `.zi` file. The panel beside the source shows the C, C++, Go, Rust, and
+Plan 9 C that `ziran build` generates, one tab per target, with a file picker
+for targets that write several files. It rebuilds when a `.zi` file in the same
+directory is saved; **Rebuild** runs it on demand. A target that fails shows its
+diagnostics in its tab instead of code.
+
+The checkboxes choose which targets to generate and save the choice to the
+`ziran.previewTargets` setting (workspace folder, or user settings for a file
+outside any folder). The `.zir` checked module is the same for every target, so
+the panel shows only target code; open a saved `.zir` file to browse it.
+
+## Finding the compiler
+
+Checking, the generated code preview, and `.zir` browsing use the `ziran`
+command from `ziran.command` when set. Otherwise they use a Ziran checkout's
+`build/bin/ziran` found above the file, in a Kryon project's `[paths].ziran`,
+or beside the workspace folder, then `~/.local/bin/ziran`, then `PATH`.
 
 ## Kryon preview
 
-Open a Kryon app folder containing `kryon.toml`, then click **Run Kryon** in
+This appears only in Kryon projects. Open a Kryon app folder containing
+`kryon.toml`, then click **Run Kryon** in
 the lower-left status bar. A **Run Kryon Preview** link also appears above
 Ziran source, and **Kryon: Preview** is available in the Command Palette.
 The rendered terminal frame appears in a canvas window
@@ -32,8 +62,6 @@ Open any `.zir` file in VS Code to see its inspected declarations and expression
 instead of binary bytes. The outline lists its types, functions, and globals.
 Use **Hex** to see byte offsets and **Open as Text** for VS Code's normal search,
 selection, and outline tools. The view refreshes when the `.zir` file changes.
-Set `ziran.inspectorCommand` if the Ziran compiler is outside the project or
-usual sibling checkout.
 
 For module directories outside the workspace, set `ziran.modulePaths` in VS Code
 settings. Paths may be absolute or relative to the workspace folder. The

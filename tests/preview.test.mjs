@@ -81,6 +81,7 @@ cat src/app.zi
     let onSave;
     let codeLensProvider;
     let runButtonVisible = false;
+    const contexts = {};
     const states = [];
     const panel = {
       webview: {
@@ -108,11 +109,16 @@ cat src/app.zi
         codeLensProvider = provider;
         return disposable;
       } },
-      commands: { registerCommand(name, listener) {
-        assert.equal(name, 'kryon.preview');
-        previewCommand = listener;
-        return disposable;
-      } },
+      commands: {
+        registerCommand(name, listener) {
+          assert.equal(name, 'kryon.preview');
+          previewCommand = listener;
+          return disposable;
+        },
+        executeCommand(name, key, value) {
+          if (name === 'setContext') contexts[key] = value;
+        },
+      },
       window: {
         activeTextEditor: { document: { uri: { scheme: 'file', fsPath: source } } },
         createWebviewPanel() { return panel; },
@@ -135,6 +141,7 @@ cat src/app.zi
     };
     activatePreview({ subscriptions: [] }, vscode);
     await waitFor(() => runButtonVisible);
+    assert.equal(contexts['ziran.kryonProject'], true);
     const lenses = await codeLensProvider.provideCodeLenses({ uri: { fsPath: source } });
     assert.equal(lenses[0].command.command, 'kryon.preview');
     await previewCommand();

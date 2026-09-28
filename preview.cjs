@@ -308,10 +308,12 @@ function activatePreview(context, vscode) {
       locations.push(vscode.window.activeTextEditor.document.uri.fsPath);
     }
     for (const folder of vscode.workspace.workspaceFolders || []) locations.push(folder.uri.fsPath);
+    let kryon = false;
     for (const location of locations) {
-      if (await projectRoot(location)) { runButton.show(); return; }
+      if (await projectRoot(location)) { kryon = true; break; }
     }
-    runButton.hide();
+    if (kryon) runButton.show(); else runButton.hide();
+    vscode.commands.executeCommand('setContext', 'ziran.kryonProject', kryon);
   };
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor(updateRunButton),

@@ -1,7 +1,7 @@
 {
   "name": "ziran-language",
   "displayName": "Ziran Language",
-  "description": "Ziran language support and live Kryon project preview",
+  "description": "Ziran language support, generated code preview for every target, and Kryon project preview",
   "version": "0.4.0",
   "publisher": "kryonlabs",
   "license": "MIT",
@@ -19,6 +19,7 @@
   "activationEvents": [
     "onLanguage:ziran",
     "onCommand:kryon.preview",
+    "onCommand:ziran.previewTargets",
     "workspaceContains:kryon.toml",
     "onCustomEditor:ziran.zirViewer"
   ],
@@ -37,6 +38,11 @@
     ],
     "commands": [
       {
+        "command": "ziran.previewTargets",
+        "title": "Ziran: Preview Generated Code",
+        "icon": "$(file-code)"
+      },
+      {
         "command": "kryon.preview",
         "title": "Kryon: Preview",
         "icon": "$(play)"
@@ -45,15 +51,61 @@
     "menus": {
       "editor/title": [
         {
-          "command": "kryon.preview",
+          "command": "ziran.previewTargets",
           "when": "resourceExtname == .zi",
           "group": "navigation@1"
+        },
+        {
+          "command": "kryon.preview",
+          "when": "resourceExtname == .zi && ziran.kryonProject",
+          "group": "navigation@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "kryon.preview",
+          "when": "ziran.kryonProject"
         }
       ]
     },
     "configuration": {
       "title": "Ziran",
       "properties": {
+        "ziran.command": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the ziran command used to check files, generate code, and inspect .zir files. Empty uses a Ziran checkout above the file or beside the workspace, then ~/.local/bin/ziran, then PATH."
+        },
+        "ziran.previewTargets": {
+          "type": "array",
+          "default": [
+            "c",
+            "cpp",
+            "go",
+            "rust",
+            "plan9-c"
+          ],
+          "items": {
+            "type": "string",
+            "enum": [
+              "c",
+              "cpp",
+              "go",
+              "rust",
+              "plan9-c"
+            ]
+          },
+          "uniqueItems": true,
+          "description": "Targets shown by Ziran: Preview Generated Code. The preview's checkboxes update this setting."
+        },
+        "ziran.modulePaths": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional module directories, relative to a workspace folder or absolute. Workspace modules and a sibling Ziran std directory are found automatically."
+        },
         "ziran.kryonCommand": {
           "type": "string",
           "default": "",
@@ -63,19 +115,6 @@
           "type": "string",
           "default": "",
           "description": "Kryon project profile to preview. Empty uses the project's default profile."
-        },
-        "ziran.inspectorCommand": {
-          "type": "string",
-          "default": "",
-          "description": "Path to the ziran command used to inspect .zir files. Empty finds the project's Ziran checkout."
-        },
-        "ziran.modulePaths": {
-          "type": "array",
-          "default": [],
-          "items": {
-            "type": "string"
-          },
-          "description": "Additional module directories, relative to a workspace folder or absolute. Workspace modules and a sibling Ziran std directory are found automatically."
         }
       }
     },

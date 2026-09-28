@@ -1,40 +1,10 @@
-const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomBytes } = require('node:crypto');
-const { manifestPath, projectRoot, runCommand } = require('./preview.cjs');
-
-async function exists(file) {
-  try { await fs.access(file); return true; }
-  catch { return false; }
-}
-
-async function inspectorFor(file, vscode) {
-  const configured = vscode.workspace.getConfiguration('ziran', vscode.Uri.file(file))
-    .get('inspectorCommand', '');
-  if (configured) return configured;
-  const root = await projectRoot(file);
-  if (root) {
-    const ziran = await manifestPath(root, 'ziran', '../ziran');
-    const command = path.join(ziran, 'build', 'bin', 'ziran');
-    if (await exists(command)) return command;
-  }
-  let directory = path.dirname(file);
-  while (true) {
-    const command = path.join(directory, 'build', 'bin', 'ziran');
-    if (await exists(command)) return command;
-    const parent = path.dirname(directory);
-    if (parent === directory) break;
-    directory = parent;
-  }
-  for (const folder of vscode.workspace.workspaceFolders || []) {
-    const command = path.resolve(folder.uri.fsPath, '../ziran/build/bin/ziran');
-    if (await exists(command)) return command;
-  }
-  return 'ziran';
-}
+const { runCommand } = require('./preview.cjs');
+const { ziranCommand } = require('./targets.cjs');
 
 async function inspectZir(file, mode, vscode) {
-  const command = await inspectorFor(file, vscode);
+  const command = await ziranCommand(file, vscode);
   const args = mode === 'hex' ? ['inspect', '--hex', file] : ['inspect', file];
   const result = await runCommand(command, args, path.dirname(file));
   return result.code === 0 ? result.stdout :
@@ -207,4 +177,4 @@ function activateZirEditor(context, vscode) {
       webviewOptions: { enableScripts: true } }));
 }
 
-module.exports = { activateZirEditor, editorHtml, inspectorFor, inspectZir, outlineEntries };
+module.exports = { activateZirEditor, editorHtml, inspectZir, outlineEntries };
