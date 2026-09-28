@@ -12,9 +12,13 @@ and the Ziran checkout's `std` are searched for imports.
 ## Running
 
 Click ▶ in the editor title bar, or **▶ Run** above `main`, to run a `.zi` file
-that declares `main :: () { ... }`. The file is saved, bundled with
-`ziran bundle --entry module:main`, and run with `ziran run` in a **Ziran**
-terminal. In Kryon projects the ▶ button runs the Kryon preview instead.
+that declares `main :: () { ... }`. A **Run** pane opens beside the source and
+shows the program's output in a window, with the run time and any build or
+runtime errors below it. Saving a `.zi` file in the same directory reruns it;
+**Run again** reruns on demand and **Generated code** opens the target preview.
+The file is bundled with `ziran bundle --entry module:main` and run with
+`ziran run` on the portable runtime; a run stops after 10 seconds. In Kryon
+projects the ▶ button runs the Kryon preview instead.
 
 ## Checking
 

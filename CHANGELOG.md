@@ -1,5 +1,9 @@
 # Changes
 
+## 0.5.3
+
+- Show a run's output in a Run pane beside the source, like the Kryon preview, and rerun it on save.
+
 ## 0.5.2
 
 - Fix the extension failing to start in 0.5.0 and 0.5.1, which left Run, the generated code preview, checking, and import completion unavailable.
