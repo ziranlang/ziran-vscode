@@ -27,6 +27,7 @@ function fakeVscode(file, command, source) {
   let onSave;
   let onMessage;
   let closePanel;
+  let focus;
   const panel = {
     webview: {
       postMessage(state) { states.push(structuredClone(state)); },
@@ -51,6 +52,7 @@ function fakeVscode(file, command, source) {
         getText: () => source, save: async () => true } },
       createWebviewPanel() { return panel; },
       showErrorMessage(message) { executed.push(['error', message]); },
+      onDidChangeActiveTextEditor(listener) { focus = listener; return disposable; },
     },
     workspace: {
       workspaceFolders: [],
@@ -66,6 +68,8 @@ function fakeVscode(file, command, source) {
   return { vscode, commands, states, executed,
     save: (fsPath) => onSave({ uri: { fsPath } }),
     send: (message) => onMessage(message),
+    focusOn: (fsPath) => focus({ document: { uri: { scheme: 'file', fsPath } } }),
+    panel,
     close: () => closePanel?.() };
 }
 
@@ -152,4 +156,24 @@ test('generated code and inspected IR are highlighted', () => {
   assert.equal(sandbox.highlight('<b>', ''), '&lt;b&gt;');
   assert.equal(sandbox.languageOf('src/main.rs'), 'rust');
   assert.equal(sandbox.languageOf('hello.hpp'), 'cpp');
+});
+
+test('run pane follows the focused .zi file', { skip: !existsSync(compiler) }, async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ziran-run-focus-'));
+  const hello = path.join(directory, 'hello.zi');
+  const greet = path.join(directory, 'greet.zi');
+  await fs.writeFile(hello, 'main :: () {\n    print("Hello\\n");\n}\n');
+  await fs.writeFile(greet, 'main :: () {\n    print("Greet\\n");\n}\n');
+  const fake = fakeVscode(hello, compiler, 'main :: () {}\n');
+  try {
+    await fake.commands['ziran.run']();
+    await waitFor(() => fake.states.at(-1)?.output === 'Hello\n');
+    fake.focusOn(greet);
+    await waitFor(() => fake.states.at(-1)?.output === 'Greet\n');
+    assert.equal(fake.states.at(-1).title, 'greet.zi');
+    assert.equal(fake.panel.title, 'Run: greet.zi');
+  } finally {
+    fake.close();
+    await fs.rm(directory, { recursive: true, force: true });
+  }
 });

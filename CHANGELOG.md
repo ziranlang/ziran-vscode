@@ -1,5 +1,9 @@
 # Changes
 
+## 0.6.1
+
+- The Run pane follows the focused `.zi` file: switching files shows and runs the new one.
+
 ## 0.6.0
 
 - Show generated code and the checked `.zir` directly under the program output in the Run pane, like the Kryon preview, instead of in a separate tab.

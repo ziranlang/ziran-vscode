@@ -262,6 +262,11 @@ ${HIGHLIGHT_SOURCE}
 </script></body></html>`;
 }
 
+function workDirectoryFor(file) {
+  return path.join(os.tmpdir(), 'ziran-run-' +
+    createHash('sha256').update(file).digest('hex').slice(0, 16));
+}
+
 class RunPreview {
   constructor(file, context, vscode) {
     this.file = file;
@@ -269,8 +274,7 @@ class RunPreview {
     this.disposed = false;
     this.running = false;
     this.rerun = false;
-    this.workDirectory = path.join(os.tmpdir(), 'ziran-run-' +
-      createHash('sha256').update(file).digest('hex').slice(0, 16));
+    this.workDirectory = workDirectoryFor(file);
     this.state = { type: 'state', title: path.basename(file), status: 'Starting…',
       output: '', problems: '', time: '', failed: false, running: true, hasMain: true,
       targets: TARGETS, enabled: enabledTargets(file, vscode), results: [],
@@ -284,11 +288,11 @@ class RunPreview {
       this.panel.webview.onDidReceiveMessage((message) => this.message(message)),
       vscode.workspace.onDidSaveTextDocument((document) => {
         if (document.uri.fsPath.endsWith('.zi') &&
-            path.dirname(document.uri.fsPath) === path.dirname(file)) this.schedule();
+            path.dirname(document.uri.fsPath) === path.dirname(this.file)) this.schedule();
       }),
       vscode.workspace.onDidChangeConfiguration((event) => {
-        if (!event.affectsConfiguration('ziran', vscode.Uri.file(file))) return;
-        this.state.enabled = enabledTargets(file, vscode);
+        if (!event.affectsConfiguration('ziran', vscode.Uri.file(this.file))) return;
+        this.state.enabled = enabledTargets(this.file, vscode);
         this.schedule();
       }),
     ];
@@ -297,6 +301,21 @@ class RunPreview {
   }
 
   reveal() { this.panel.reveal(this.vscode.ViewColumn.Beside, true); }
+
+  /* The pane follows the focused .zi file: it switches and reruns. */
+  retarget(file) {
+    if (this.disposed || file === this.file) return;
+    fs.rm(this.workDirectory, { recursive: true, force: true }).catch(() => {});
+    this.file = file;
+    this.workDirectory = workDirectoryFor(file);
+    this.panel.title = `Run: ${path.basename(file)}`;
+    Object.assign(this.state, { title: path.basename(file), status: 'Starting…',
+      output: '', problems: '', time: '', failed: false, running: true,
+      enabled: enabledTargets(file, this.vscode), results: [], irModules: [],
+      irError: '', codeRunning: true });
+    this.post();
+    this.schedule();
+  }
 
   dispose() {
     if (this.disposed) return;
@@ -422,7 +441,10 @@ class RunPreview {
 }
 
 function activateRun(context, vscode) {
-  const previews = new Map();
+  /* One Run pane, showing whichever .zi file has focus. */
+  let pane = null;
+  const isZiran = (document) => document?.uri.scheme === 'file' &&
+    document.uri.fsPath.endsWith('.zi');
   context.subscriptions.push(
     vscode.commands.registerCommand('ziran.run', async (uri) => {
       const document = uri ? await vscode.workspace.openTextDocument(uri) :
@@ -433,15 +455,18 @@ function activateRun(context, vscode) {
       }
       if (document.isDirty) await document.save();
       const file = document.uri.fsPath;
-      if (previews.has(file)) {
-        const preview = previews.get(file);
-        preview.reveal();
-        preview.schedule();
+      if (pane) {
+        pane.retarget(file);
+        pane.reveal();
+        pane.schedule();
         return;
       }
-      const preview = new RunPreview(file, context, vscode);
-      previews.set(file, preview);
-      preview.panel.onDidDispose(() => previews.delete(file));
+      pane = new RunPreview(file, context, vscode);
+      const opened = pane;
+      pane.panel.onDidDispose(() => { if (pane === opened) pane = null; });
+    }),
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      if (pane && isZiran(editor?.document)) pane.retarget(editor.document.uri.fsPath);
     }),
     vscode.languages.registerCodeLensProvider({ language: 'ziran', scheme: 'file' }, {
       async provideCodeLenses(document) {
