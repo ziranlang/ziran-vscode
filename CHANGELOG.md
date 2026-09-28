@@ -1,5 +1,9 @@
 # Changes
 
+## 0.5.2
+
+- Fix the extension failing to start in 0.5.0 and 0.5.1, which left Run, the generated code preview, checking, and import completion unavailable.
+
 ## 0.5.1
 
 - Run any `.zi` file with a `main` procedure from the ▶ button in the editor title bar or the **▶ Run** link above `main`. Output appears in a Ziran terminal.

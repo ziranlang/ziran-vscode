@@ -20,7 +20,7 @@ async function collect(directory, files) {
   }
 }
 
-async // A lone file's own directory, without descending into it.
+// A lone file's own directory, without descending into it.
 async function collectDirectory(directory, files) {
   let entries;
   try { entries = await fs.readdir(directory, { withFileTypes: true }); }
