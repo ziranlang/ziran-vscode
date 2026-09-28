@@ -1,5 +1,9 @@
 # Changes
 
+## 0.5.1
+
+- Run any `.zi` file with a `main` procedure from the ▶ button in the editor title bar or the **▶ Run** link above `main`. Output appears in a Ziran terminal.
+
 ## 0.5.0
 
 - Check `.zi` files on open and save, with errors in the Problems panel.

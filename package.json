@@ -2,7 +2,7 @@
   "name": "ziran-language",
   "displayName": "Ziran Language",
   "description": "Ziran language support, generated code preview for every target, and Kryon project preview",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "publisher": "kryonlabs",
   "license": "MIT",
   "repository": {
@@ -19,6 +19,7 @@
   "activationEvents": [
     "onLanguage:ziran",
     "onCommand:kryon.preview",
+    "onCommand:ziran.run",
     "onCommand:ziran.previewTargets",
     "workspaceContains:kryon.toml",
     "onCustomEditor:ziran.zirViewer"
@@ -38,6 +39,11 @@
     ],
     "commands": [
       {
+        "command": "ziran.run",
+        "title": "Ziran: Run",
+        "icon": "$(play)"
+      },
+      {
         "command": "ziran.previewTargets",
         "title": "Ziran: Preview Generated Code",
         "icon": "$(file-code)"
@@ -50,6 +56,11 @@
     ],
     "menus": {
       "editor/title": [
+        {
+          "command": "ziran.run",
+          "when": "resourceExtname == .zi && !ziran.kryonProject",
+          "group": "navigation@0"
+        },
         {
           "command": "ziran.previewTargets",
           "when": "resourceExtname == .zi",

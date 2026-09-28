@@ -9,6 +9,13 @@ This is language support for any Ziran project; it does not bundle Kryon widgets
 A single `.zi` file works without a folder or `kryon.toml`: its own directory
 and the Ziran checkout's `std` are searched for imports.
 
+## Running
+
+Click ▶ in the editor title bar, or **▶ Run** above `main`, to run a `.zi` file
+that declares `main :: () { ... }`. The file is saved, bundled with
+`ziran bundle --entry module:main`, and run with `ziran run` in a **Ziran**
+terminal. In Kryon projects the ▶ button runs the Kryon preview instead.
+
 ## Checking
 
 Opening or saving a `.zi` file runs `ziran check` on it and lists any errors in
