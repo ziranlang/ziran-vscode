@@ -2,6 +2,7 @@
 
 ## 0.6.1
 
+- Show Plan 9 C as 9c, right after C++, in the generated code tabs.
 - The Run pane follows the focused `.zi` file: switching files shows and runs the new one.
 
 ## 0.6.0

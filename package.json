@@ -81,18 +81,18 @@
           "default": [
             "c",
             "cpp",
+            "plan9-c",
             "go",
-            "rust",
-            "plan9-c"
+            "rust"
           ],
           "items": {
             "type": "string",
             "enum": [
               "c",
               "cpp",
+              "plan9-c",
               "go",
-              "rust",
-              "plan9-c"
+              "rust"
             ]
           },
           "uniqueItems": true,
