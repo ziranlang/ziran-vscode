@@ -46,6 +46,18 @@ async function ziranCommand(file, vscode) {
   return await exists(local) ? local : 'ziran';
 }
 
+// The Ziran package a file belongs to: the nearest directory with a
+// ziran.toml, or null for a lone file.
+async function packageRoot(file) {
+  let directory = path.dirname(file);
+  while (true) {
+    if (await exists(path.join(directory, 'ziran.toml'))) return directory;
+    const parent = path.dirname(directory);
+    if (parent === directory) return null;
+    directory = parent;
+  }
+}
+
 // Standard modules that belong to a checkout's build/bin/ziran.
 function commandStd(command) {
   const bin = path.dirname(command);
@@ -120,5 +132,6 @@ async function buildTarget(command, target, file, workDirectory, paths) {
   return { id: target, ok: true, message, files };
 }
 
-module.exports = { TARGETS, buildArgs, buildTarget, commandStd, enabledTargets,
+module.exports = {
+  packageRoot, TARGETS, buildArgs, buildTarget, commandStd, enabledTargets,
   listFiles, modulePaths, ziranCommand };

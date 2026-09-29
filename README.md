@@ -9,6 +9,13 @@ This is language support for any Ziran project; it does not bundle Kryon widgets
 A single `.zi` file works without a folder or `kryon.toml`: its own directory
 and the Ziran checkout's `std` are searched for imports.
 
+Inside a Ziran package (a folder with `ziran.toml`), files are checked with
+`ziran check --project`, so dependencies added with `ziran add URL` are
+checked too. Go to Definition and import completion then follow the
+project's module map: `#import "kryon/Widgets"` opens that dependency's
+exported module, `#import "std/text"` the pinned standard library, and a
+short name resolves the way the compiler resolves it.
+
 ## Running
 
 Click ▶ in the editor title bar, or **▶ Run** above `main`, to open the **Run**
