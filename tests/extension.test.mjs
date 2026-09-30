@@ -30,6 +30,7 @@ test('the extension activates and registers every contributed command', () => {
       registerDocumentSymbolProvider() { return disposable; },
       registerCompletionItemProvider() { return disposable; },
       registerDefinitionProvider() { return disposable; },
+      registerHoverProvider() { return disposable; },
     },
     window: {
       createStatusBarItem() { return { ...disposable, show() {}, hide() {} }; },

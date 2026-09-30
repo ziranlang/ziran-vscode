@@ -1,5 +1,11 @@
 # Changes
 
+## 0.7.0
+
+- Complete the procedures, types, constants, and globals a file's program declares, with their signatures, as reported by `ziran api`.
+- Show a declaration and the comment above it when hovering a name.
+- Go to Definition opens the declaration of a procedure, type, constant, or global, not only of an imported module.
+
 ## 0.6.3
 
 - Show Python, from `ziran build --target=py`, as a tab in the Run pane's generated code, with highlighting and a checkbox in `ziran.previewTargets`.

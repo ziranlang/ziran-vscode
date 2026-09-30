@@ -7,6 +7,7 @@ const { activatePreview, runCommand } = require('./preview.cjs');
 const { commandStd, modulePaths, packageRoot, ziranCommand } = require('./targets.cjs');
 const { activateRun } = require('./run.cjs');
 const { activateZirEditor } = require('./zir-editor.cjs');
+const { apiSymbols, docComment, findSymbol, nameAt } = require('./symbols.cjs');
 
 async function collect(directory, files) {
   let entries;
@@ -116,6 +117,48 @@ async function checkDocument(document, diagnostics) {
   for (const [target, list] of found) diagnostics.set(vscode.Uri.file(target), list);
 }
 
+// The declarations `ziran api` reports for a document's program, with
+// absolute paths, and the document's own module; cached per version.
+const symbolCache = new Map();
+async function programSymbols(document) {
+  const key = document.uri.fsPath;
+  const cached = symbolCache.get(key);
+  if (cached && cached.version === document.version) return cached.result;
+  const result = (async () => {
+    const file = document.uri.fsPath;
+    const command = await ziranCommand(file, vscode);
+    const project = file.endsWith('.zi') ? await packageRoot(file) : null;
+    const args = ['api', '--json'];
+    if (project) {
+      args.push('--project');
+    } else {
+      args.push('--root', path.dirname(file));
+      for (const entry of await modulePaths(file, command, vscode)) args.push('--module-path', entry);
+    }
+    args.push(file);
+    const run = await runCommand(command, args, project || path.dirname(file));
+    const symbols = apiSymbols(run.stdout || '');
+    let own = null;
+    for (const symbol of symbols) {
+      symbol.file = await diagnosticPath(file, project, symbol.path);
+      if (!own && await diagnosticPath(file, project, symbol.source) === file) own = symbol.module;
+    }
+    return { symbols, own };
+  })();
+  symbolCache.set(key, { version: document.version, result });
+  return result;
+}
+
+const COMPLETION_KIND = { function: 'Function', type: 'Struct', constant: 'Constant', global: 'Variable' };
+
+async function symbolAtPosition(document, position) {
+  const found = nameAt(document.lineAt(position.line).text, position.character);
+  if (!found) return null;
+  const { symbols, own } = await programSymbols(document);
+  const symbol = findSymbol(symbols, found.name, found.qualifier ? null : own);
+  return symbol ? { symbol, found } : null;
+}
+
 function activate(context) {
   activatePreview(context, vscode);
   activateRun(context, vscode);
@@ -127,7 +170,7 @@ function activate(context) {
     vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)));
   for (const document of vscode.workspace.textDocuments) checkDocument(document, diagnostics);
   const caches = new Map();
-  const invalidate = () => { caches.clear(); };
+  const invalidate = () => { caches.clear(); symbolCache.clear(); };
   const index = (document) => {
     const folder = vscode.workspace.getWorkspaceFolder(document.uri);
     const key = folder ? '' : path.dirname(document.uri.fsPath);
@@ -146,7 +189,19 @@ function activate(context) {
   context.subscriptions.push(vscode.languages.registerCompletionItemProvider('ziran', {
     async provideCompletionItems(document, position) {
       const imported = importAt(document.lineAt(position.line).text, position.character);
-      if (!imported || imported.target.includes('.')) return [];
+      if (!imported) {
+        // Procedures, types, constants, and globals the program declares.
+        const { symbols } = await programSymbols(document);
+        const seen = new Set();
+        return symbols.filter((symbol) => !seen.has(symbol.name) && seen.add(symbol.name))
+          .map((symbol) => {
+            const item = new vscode.CompletionItem(symbol.name,
+              vscode.CompletionItemKind[COMPLETION_KIND[symbol.kind]]);
+            item.detail = symbol.detail;
+            return item;
+          });
+      }
+      if (imported.target.includes('.')) return [];
       const map = await projectModuleMap(document.uri.fsPath);
       if (map) {
         return mappedImportIds(map, document.uri.fsPath).map((id) => {
@@ -173,7 +228,11 @@ function activate(context) {
   context.subscriptions.push(vscode.languages.registerDefinitionProvider('ziran', {
     async provideDefinition(document, position) {
       const imported = importAt(document.lineAt(position.line).text, position.character);
-      if (!imported) return null;
+      if (!imported) {
+        const at = await symbolAtPosition(document, position);
+        return at ? new vscode.Location(vscode.Uri.file(at.symbol.file),
+          new vscode.Position(Math.max(0, at.symbol.line - 1), 0)) : null;
+      }
       const map = await projectModuleMap(document.uri.fsPath);
       let matches = map ? resolveMapped(map, document.uri.fsPath, imported.target) : [];
       if (!matches.length) {
@@ -183,6 +242,23 @@ function activate(context) {
       }
       return matches.map((file) => new vscode.Location(vscode.Uri.file(file),
         new vscode.Position(0, 0)));
+    },
+  }));
+
+  context.subscriptions.push(vscode.languages.registerHoverProvider('ziran', {
+    async provideHover(document, position) {
+      if (importAt(document.lineAt(position.line).text, position.character)) return null;
+      const at = await symbolAtPosition(document, position);
+      if (!at) return null;
+      const markdown = new vscode.MarkdownString();
+      markdown.appendCodeblock(at.symbol.detail, 'ziran');
+      try {
+        const lines = (await fs.readFile(at.symbol.file, 'utf8')).split(/\r?\n/);
+        const comment = docComment(lines, at.symbol.line);
+        if (comment) markdown.appendMarkdown(`\n${comment}`);
+      } catch {}
+      return new vscode.Hover(markdown, new vscode.Range(position.line, at.found.start,
+        position.line, at.found.end));
     },
   }));
 

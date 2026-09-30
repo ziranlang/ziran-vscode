@@ -40,6 +40,15 @@ Opening or saving a `.zi` file runs `ziran check` on it and lists any errors in
 the **Problems** panel and under the source. A file checks with its own
 directory as the root, as `ziran check --root . file.zi` would.
 
+## Names, hover, and definitions
+
+The extension asks `ziran api` which procedures, types, constants, and globals
+a file's program declares, including those of its imports. Completion offers
+them with their signatures, hovering a name shows its declaration and the
+`//` comment above it, and Go to Definition opens the line that declares it.
+A name the file's own module declares wins over an imported one of the same
+name.
+
 ## Finding the compiler
 
 Checking, the Run pane, and `.zir` browsing use the `ziran`
