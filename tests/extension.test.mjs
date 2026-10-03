@@ -16,6 +16,7 @@ test('the extension activates and registers every contributed command', () => {
     SymbolKind: { Function: 11, Struct: 22, Variable: 12 },
     CompletionItem: class {},
     CompletionItemKind: { Module: 8 },
+    CodeActionKind: { QuickFix: 'quickfix' },
     Range: class {},
     Position: class {},
     Location: class {},
@@ -31,6 +32,7 @@ test('the extension activates and registers every contributed command', () => {
       registerCompletionItemProvider() { return disposable; },
       registerDefinitionProvider() { return disposable; },
       registerHoverProvider() { return disposable; },
+      registerCodeActionsProvider() { return disposable; },
     },
     window: {
       createStatusBarItem() { return { ...disposable, show() {}, hide() {} }; },

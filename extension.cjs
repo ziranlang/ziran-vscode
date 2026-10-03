@@ -8,6 +8,7 @@ const { commandStd, modulePaths, packageRoot, ziranCommand } = require('./target
 const { activateRun } = require('./run.cjs');
 const { activateZirEditor } = require('./zir-editor.cjs');
 const { apiSymbols, docComment, findSymbol, nameAt } = require('./symbols.cjs');
+const { diagnosticRecords, diagnosticRange, diagnosticActions } = require('./diagnostics.cjs');
 
 async function collect(directory, files) {
   let entries;
@@ -83,6 +84,7 @@ async function diagnosticPath(file, project, relative) {
 async function checkDocument(document, diagnostics) {
   if (document.languageId !== 'ziran' || document.uri.scheme !== 'file') return;
   const file = document.uri.fsPath;
+  const version = document.version;
   const command = await ziranCommand(file, vscode);
   const project = file.endsWith('.zi') ? await packageRoot(file) : null;
   const args = ['check', '--diagnostics=json'];
@@ -94,25 +96,36 @@ async function checkDocument(document, diagnostics) {
   }
   args.push(file);
   const result = await runCommand(command, args, project || path.dirname(file));
+  if (document.version !== version) return;
   if (result.code === null) { diagnostics.delete(document.uri); return; }
   const found = new Map();
-  for (const line of `${result.stdout}\n${result.stderr}`.split(/\r?\n/)) {
-    let item;
-    try { item = JSON.parse(line); } catch { continue; }
-    if (!item || typeof item.message !== 'string') continue;
+  for (const item of diagnosticRecords(`${result.stdout}\n${result.stderr}`)) {
     const target = item.path ? await diagnosticPath(file, project, item.path) : file;
-    const start = new vscode.Position(Math.max(0, (item.line || 1) - 1),
-      Math.max(0, (item.column || 1) - 1));
-    const end = item.end_line ? new vscode.Position(Math.max(0, item.end_line - 1),
-      Math.max(0, item.end_column - 1)) : start.translate(0, 1);
-    const diagnostic = new vscode.Diagnostic(new vscode.Range(start, end), item.message,
+    const diagnostic = new vscode.Diagnostic(diagnosticRange(vscode, item), item.message,
       item.severity === 'warning' ? vscode.DiagnosticSeverity.Warning :
         vscode.DiagnosticSeverity.Error);
     if (item.code) diagnostic.code = item.code;
     diagnostic.source = 'ziran';
+    diagnostic.relatedInformation = [];
+    for (const related of Array.isArray(item.related) ? item.related : []) {
+      if (typeof related.path !== 'string' || typeof related.message !== 'string') continue;
+      const relatedFile = await diagnosticPath(file, project, related.path);
+      diagnostic.relatedInformation.push(new vscode.DiagnosticRelatedInformation(
+        new vscode.Location(vscode.Uri.file(relatedFile), diagnosticRange(vscode, related)),
+        related.message));
+    }
+    diagnostic.edits = [];
+    for (const edit of Array.isArray(item.edits) ? item.edits : []) {
+      if (typeof edit.path !== 'string' || typeof edit.replacement !== 'string' ||
+          typeof edit.original !== 'string') continue;
+      diagnostic.edits.push({ ...edit,
+        uri: vscode.Uri.file(await diagnosticPath(file, project, edit.path)),
+        range: diagnosticRange(vscode, edit) });
+    }
     if (!found.has(target)) found.set(target, []);
     found.get(target).push(diagnostic);
   }
+  if (document.version !== version) return;
   diagnostics.delete(document.uri);
   for (const [target, list] of found) diagnostics.set(vscode.Uri.file(target), list);
 }
@@ -169,6 +182,11 @@ function activate(context) {
     vscode.workspace.onDidSaveTextDocument((document) => checkDocument(document, diagnostics)),
     vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)));
   for (const document of vscode.workspace.textDocuments) checkDocument(document, diagnostics);
+  context.subscriptions.push(vscode.languages.registerCodeActionsProvider('ziran', {
+    provideCodeActions(document, range, context) {
+      return diagnosticActions(vscode, document, context);
+    },
+  }, { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }));
   const caches = new Map();
   const invalidate = () => { caches.clear(); symbolCache.clear(); };
   const index = (document) => {

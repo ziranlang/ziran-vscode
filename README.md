@@ -39,6 +39,9 @@ preview instead.
 Opening or saving a `.zi` file runs `ziran check` on it and lists any errors in
 the **Problems** panel and under the source. A file checks with its own
 directory as the root, as `ziran check --root . file.zi` would.
+Type errors link to related declarations in the Problems panel. Missing-name
+errors offer a Quick Fix when the compiler identifies an unambiguous source
+replacement; a fix is discarded if the name has changed since checking.
 
 ## Names, hover, and definitions
 
