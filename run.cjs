@@ -15,8 +15,8 @@ function mainLine(source) {
   return lines.findIndex((line) => /^main\s*::\s*\(/.test(line));
 }
 
-// `ziran bundle --root . --entry hello:main -o hello.zib hello.zi`, then
-// `ziran run hello.zib`: the file's main on the portable runtime.
+// `ziran bundle --root . --entry hello:main -o hello.zx hello.zi`, then
+// `ziran run hello.zx`: the file's main on the portable runtime.
 function runSteps(command, file, paths, bundle) {
   const args = ['bundle', '--root', path.dirname(file)];
   for (const entry of paths) args.push('--module-path', entry);
@@ -365,7 +365,7 @@ class RunPreview {
         status: 'Up to date · no main to run' });
       return;
     }
-    const bundle = path.join(this.workDirectory, 'program.zib');
+    const bundle = path.join(this.workDirectory, 'program.zx');
     const [bundleStep, runStep] = runSteps(command, this.file, paths, bundle);
     const started = Date.now();
     const built = await execute(bundleStep.command, bundleStep.args, path.dirname(this.file),

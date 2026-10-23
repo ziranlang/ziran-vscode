@@ -80,10 +80,10 @@ test('run finds the file\'s main procedure', () => {
 });
 
 test('run bundles the file\'s main and runs it on the portable runtime', () => {
-  assert.deepEqual(runSteps('ziran', '/notes/hello.zi', ['/std'], '/tmp/hello.zib'), [
+  assert.deepEqual(runSteps('ziran', '/notes/hello.zi', ['/std'], '/tmp/hello.zx'), [
     { command: 'ziran', args: ['bundle', '--root', '/notes', '--module-path', '/std',
-      '--entry', 'hello:main', '-o', '/tmp/hello.zib', '/notes/hello.zi'] },
-    { command: 'ziran', args: ['run', '/tmp/hello.zib'] },
+      '--entry', 'hello:main', '-o', '/tmp/hello.zx', '/notes/hello.zi'] },
+    { command: 'ziran', args: ['run', '/tmp/hello.zx'] },
   ]);
 });
 

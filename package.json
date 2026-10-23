@@ -156,11 +156,11 @@
           "Ziran Bundle"
         ],
         "extensions": [
-          ".zib"
+          ".zx"
         ],
         "icon": {
-          "light": "./icons/zib.svg",
-          "dark": "./icons/zib.svg"
+          "light": "./icons/zx.svg",
+          "dark": "./icons/zx.svg"
         }
       }
     ],
