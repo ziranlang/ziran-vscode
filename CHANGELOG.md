@@ -1,5 +1,10 @@
 # Changes
 
+## 0.7.1
+
+- Run portable programs as `.zx` files and show the portable file icon for `.zx`.
+- Keep `.zi` for source files and `.zir` for checked intermediate modules.
+
 ## 0.7.0
 
 - Complete the procedures, types, constants, and globals a file's program declares, with their signatures, as reported by `ziran api`.
