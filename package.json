@@ -81,21 +81,13 @@
           "type": "array",
           "default": [
             "c",
-            "cpp",
-            "plan9-c",
-            "go",
-            "rust",
-            "py"
+            "go"
           ],
           "items": {
             "type": "string",
             "enum": [
               "c",
-              "cpp",
-              "plan9-c",
-              "go",
-              "rust",
-              "py"
+              "go"
             ]
           },
           "uniqueItems": true,

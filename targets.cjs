@@ -5,11 +5,7 @@ const { manifestPath, projectRoot, runCommand } = require('./preview.cjs');
 
 const TARGETS = [
   { id: 'c', label: 'C' },
-  { id: 'cpp', label: 'C++' },
-  { id: 'plan9-c', label: '9c' },
   { id: 'go', label: 'Go' },
-  { id: 'rust', label: 'Rust' },
-  { id: 'py', label: 'Python' },
 ];
 
 async function exists(file) {

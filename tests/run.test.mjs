@@ -60,7 +60,7 @@ function fakeVscode(file, command, source) {
       onDidSaveTextDocument(listener) { onSave = listener; return disposable; },
         onDidChangeConfiguration() { return disposable; },
       getConfiguration() { return { get(name, fallback) {
-        return name === 'command' ? command : name === 'previewTargets' ? ['c', 'rust'] : fallback;
+        return name === 'command' ? command : name === 'previewTargets' ? ['c', 'go'] : fallback;
       } }; },
     },
   };
@@ -126,7 +126,7 @@ test('run pane shows hello world output and reruns on save', { skip: !existsSync
     const state = fake.states.at(-1);
     assert.equal(state.output, 'Hello, World!\n');
     assert.equal(state.title, 'hello.zi');
-    assert.deepEqual(state.results.map((result) => [result.id, result.ok]), [['c', true], ['rust', true]]);
+    assert.deepEqual(state.results.map((result) => [result.id, result.ok]), [['c', true], ['go', true]]);
     assert.match(state.results[0].files[0].text, /Hello, World!/);
     assert.equal(state.irModules[0].name, 'hello.zir');
     assert.match(state.irModules[0].text, /function main\(\) -> void/);
