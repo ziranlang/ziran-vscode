@@ -8,7 +8,8 @@ import { createRequire } from 'node:module';
 import { test } from 'node:test';
 
 const require = createRequire(import.meta.url);
-const { HIGHLIGHT_SOURCE, activateRun, mainLine, runHtml, runSteps } = require('../run.cjs');
+const { HEX_VIEW_SOURCE, HIGHLIGHT_SOURCE, activateRun, binaryContentStart, elfCodeStart,
+  mainLine, runHtml, runSteps } = require('../run.cjs');
 
 const disposable = { dispose() {} };
 const compiler = path.resolve('../ziran/build/bin/ziran');
@@ -87,6 +88,189 @@ test('run bundles the file\'s main and runs it on the portable runtime', () => {
   ]);
 });
 
+function elf64WithText(main = true) {
+  const data = Buffer.alloc(0x500);
+  Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]).copy(data);
+  data.writeUInt16LE(2, 16);
+  data.writeUInt16LE(0x3e, 18);
+  data.writeUInt32LE(1, 20);
+  data.writeBigUInt64LE(0x401000n, 24);
+  data.writeBigUInt64LE(0n, 32);
+  data.writeBigUInt64LE(0x300n, 40);
+  data.writeUInt16LE(64, 52);
+  data.writeUInt16LE(56, 54);
+  data.writeUInt16LE(0, 56);
+  data.writeUInt16LE(64, 58);
+  data.writeUInt16LE(5, 60);
+  data.writeUInt16LE(1, 62);
+  Buffer.from('\0.shstrtab\0.strtab\0.symtab\0.text\0').copy(data, 0x200);
+  Buffer.from(main ? '\0main\0' : '\0other\0').copy(data, 0x240);
+  const strings = 0x300 + 64;
+  data.writeUInt32LE(1, strings);
+  data.writeUInt32LE(3, strings + 4);
+  data.writeBigUInt64LE(0x200n, strings + 24);
+  data.writeBigUInt64LE(33n, strings + 32);
+  const names = 0x300 + 128;
+  data.writeUInt32LE(11, names);
+  data.writeUInt32LE(3, names + 4);
+  data.writeBigUInt64LE(0x240n, names + 24);
+  data.writeBigUInt64LE(BigInt(main ? 6 : 7), names + 32);
+  const symbols = 0x300 + 192;
+  data.writeUInt32LE(19, symbols);
+  data.writeUInt32LE(2, symbols + 4);
+  data.writeBigUInt64LE(0x280n, symbols + 24);
+  data.writeBigUInt64LE(48n, symbols + 32);
+  data.writeUInt32LE(2, symbols + 40);
+  data.writeBigUInt64LE(24n, symbols + 56);
+  const symbol = 0x280 + 24;
+  data.writeUInt32LE(1, symbol);
+  data[symbol + 4] = 0x12;
+  data.writeUInt16LE(4, symbol + 6);
+  data.writeBigUInt64LE(0x401010n, symbol + 8);
+  data.writeBigUInt64LE(16n, symbol + 16);
+  const text = 0x300 + 256;
+  data.writeUInt32LE(27, text);
+  data.writeUInt32LE(1, text + 4);
+  data.writeBigUInt64LE(6n, text + 8);
+  data.writeBigUInt64LE(0x401000n, text + 16);
+  data.writeBigUInt64LE(0x180n, text + 24);
+  data.writeBigUInt64LE(64n, text + 32);
+  return data;
+}
+
+function elf64NativeWithoutSections() {
+  const data = Buffer.alloc(0x200);
+  Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]).copy(data);
+  data.writeUInt16LE(2, 16);
+  data.writeUInt16LE(0x3e, 18);
+  data.writeUInt32LE(1, 20);
+  data.writeBigUInt64LE(0x401020n, 24);
+  data.writeBigUInt64LE(64n, 32);
+  data.writeBigUInt64LE(0n, 40);
+  data.writeUInt16LE(64, 52);
+  data.writeUInt16LE(56, 54);
+  data.writeUInt16LE(1, 56);
+  data.writeUInt16LE(64, 58);
+  data.writeUInt16LE(0, 60);
+  data.writeUInt16LE(0, 62);
+  data.writeUInt32LE(1, 64);
+  data.writeUInt32LE(5, 68);
+  data.writeBigUInt64LE(0x100n, 72);
+  data.writeBigUInt64LE(0x401000n, 80);
+  data.writeBigUInt64LE(0x401000n, 88);
+  data.writeBigUInt64LE(0x80n, 96);
+  data.writeBigUInt64LE(0x80n, 104);
+  data.writeBigUInt64LE(0x1000n, 112);
+  return data;
+}
+
+function elf32BigEndianWithoutSections() {
+  const data = Buffer.alloc(0x100);
+  Buffer.from([0x7f, 0x45, 0x4c, 0x46, 1, 2, 1]).copy(data);
+  data.writeUInt16BE(2, 16);
+  data.writeUInt16BE(3, 18);
+  data.writeUInt32BE(1, 20);
+  data.writeUInt32BE(0x1010, 24);
+  data.writeUInt32BE(52, 28);
+  data.writeUInt32BE(0, 32);
+  data.writeUInt16BE(52, 40);
+  data.writeUInt16BE(32, 42);
+  data.writeUInt16BE(1, 44);
+  data.writeUInt16BE(40, 46);
+  data.writeUInt16BE(0, 48);
+  data.writeUInt16BE(0, 50);
+  data.writeUInt32BE(1, 52);
+  data.writeUInt32BE(0x80, 56);
+  data.writeUInt32BE(0x1000, 60);
+  data.writeUInt32BE(0x1000, 64);
+  data.writeUInt32BE(0x40, 68);
+  data.writeUInt32BE(0x40, 72);
+  data.writeUInt32BE(5, 76);
+  data.writeUInt32BE(0x10, 80);
+  return data;
+}
+
+function wasmWithCodeSection() {
+  return Buffer.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0,
+    1, 1, 0x60, 10, 4, 1, 2, 0, 0]);
+}
+
+function zxWithInstructionSection() {
+  const data = Buffer.alloc(300);
+  Buffer.from([0x5a, 0x58, 0, 0]).copy(data);
+  data.writeUInt32LE(28, 4);
+  data.writeUInt32LE(64, 8);
+  data.writeUInt32LE(32, 12);
+  data.writeBigUInt64LE(1n, 16);
+  data.writeUInt32LE(3, 32);
+  data.writeBigUInt64LE(BigInt(data.length), 40);
+  data.writeBigUInt64LE(64n, 48);
+  data.writeUInt32LE(1, 56);
+  for (const [index, kind, offset, length] of [[0, 1, 160, 128], [1, 2, 288, 8], [2, 3, 296, 4]]) {
+    const record = 64 + index * 32;
+    data.writeUInt32LE(kind, record);
+    data.writeUInt32LE(1, record + 4);
+    data.writeBigUInt64LE(BigInt(offset), record + 8);
+    data.writeBigUInt64LE(BigInt(length), record + 16);
+    data.writeUInt32LE(8, record + 24);
+  }
+  data[288] = 3;
+  return data;
+}
+
+test('ELF64 little-endian binaries start at a main symbol instead of startup code', () => {
+  assert.deepEqual(elfCodeStart(elf64WithText()), {
+    offset: 0x190, label: 'main at 0x190 (.text)', toggleLabel: 'Show ELF headers',
+  });
+});
+
+test('an ELF without a main symbol falls back to its executable .text section', () => {
+  assert.deepEqual(elfCodeStart(elf64WithText(false)), {
+    offset: 0x180, label: 'code starts at 0x180 (.text)', toggleLabel: 'Show ELF headers',
+  });
+});
+
+test('a program-header-only native ELF starts at the executable entry segment', () => {
+  assert.deepEqual(elfCodeStart(elf64NativeWithoutSections()), {
+    offset: 0x100, label: 'code starts at 0x100 (entry segment)',
+    toggleLabel: 'Show ELF headers',
+  });
+});
+
+test('ELF32 big-endian headers use the same entry-segment fallback', () => {
+  assert.deepEqual(elfCodeStart(elf32BigEndianWithoutSections()),
+    { offset: 0x80, label: 'code starts at 0x80 (entry segment)',
+      toggleLabel: 'Show ELF headers' });
+});
+
+test('Wasm and executable ZX binaries start at their instruction sections', () => {
+  assert.deepEqual(binaryContentStart(wasmWithCodeSection()), {
+    offset: 13, label: 'code starts at 0xd (Wasm code section)', toggleLabel: 'Show full file',
+  });
+  assert.deepEqual(binaryContentStart(zxWithInstructionSection()), {
+    offset: 288, label: 'instructions start at 0x120 (ZX program section)',
+    toggleLabel: 'Show full file',
+  });
+});
+
+test('unknown, truncated and malformed binaries show the whole file', () => {
+  assert.equal(binaryContentStart(Buffer.from('not a known binary')), null);
+  assert.equal(binaryContentStart(Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1])), null);
+  const malformed = elf64WithText();
+  malformed.writeBigUInt64LE(0x100000n, 40);
+  assert.equal(binaryContentStart(malformed), null);
+  assert.equal(binaryContentStart(Buffer.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 10, 127])), null);
+});
+
+test('going to an offset inside hidden ELF headers reveals the full file', () => {
+  const sandbox = {};
+  vm.runInNewContext(HEX_VIEW_SOURCE + '\nthis.hexWindow = hexWindow;', sandbox);
+  assert.equal(sandbox.hexWindow(0x1040, false).start, 0x1040);
+  const revealed = sandbox.hexWindow(0x1040, false, 0x40);
+  assert.equal(revealed.showFullFile, true);
+  assert.equal(revealed.start, 0);
+});
+
 test('run pane webview script is valid', () => {
   const html = runHtml('nonce');
   assert.match(html, /class="window"/);
@@ -95,6 +279,7 @@ test('run pane webview script is valid', () => {
   assert.doesNotMatch(html, /id="ir-section"/);
   assert.match(html, /id="views" role="tablist"/);
   assert.match(html, /id="hex-scroll"/);
+  assert.match(html, /Show full file/);
   const script = html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1];
   assert.doesNotThrow(() => new vm.Script(script));
 });
@@ -138,6 +323,9 @@ test('run pane shows hello world output and reruns on save', { skip: !existsSync
     assert.equal(binary.name, 'hello');
     assert.equal(binary.binary.path, undefined);
     assert.ok(binary.binary.size > 1000);
+    assert.ok(binary.binary.contentStart > 0);
+    assert.match(binary.binary.contentLabel, /^main at 0x[0-9a-f]+ \(\.text\)$/);
+    assert.equal(binary.binary.toggleLabel, 'Show ELF headers');
     await fake.send({ type: 'bytes', key: binary.binary.key, offset: 0, length: 4 });
     const page = fake.states.at(-1);
     assert.equal(page.type, 'bytes');

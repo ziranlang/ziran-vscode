@@ -17,7 +17,8 @@ exports.run = async () => {
     const openPath = path.join(process.env.ZIRAN_PREVIEW_RUNTIME, 'open');
     try {
       const other = await vscode.workspace.openTextDocument((await fs.readFile(openPath, 'utf8')).trim());
-      await vscode.window.showTextDocument(other);
+      await vscode.window.showTextDocument(other, { viewColumn: vscode.ViewColumn.One,
+        preserveFocus: false });
       await fs.unlink(openPath);
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const editPath = path.join(process.env.ZIRAN_PREVIEW_RUNTIME, 'edit');

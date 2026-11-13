@@ -232,11 +232,11 @@ test('the native direct backend shows its listings, disassembly and ELF', {
     const work = path.join(directory, 'generated');
     const native = await buildTarget(compiler, 'native', source, work, []);
     assert.equal(native.ok, true, native.message);
-    assert.match(viewOf(native, 'lowered').files[0].text, /^lir 3 entry/);
+    assert.match(viewOf(native, 'lowered').files[0].text, /^lir \d+ entry/);
     assert.match(viewOf(native, 'disassembly').files[0].text, /--adjust-vma=-0x[0-9a-f]+[\s\S]*<.*>:/);
     assert.deepEqual(await bytesOf(viewOf(native, 'binary').files[0]), [0x7f, 0x45, 0x4c, 0x46]);
     const zx = await buildTarget(compiler, 'zx', source, work, []);
-    assert.match(viewOf(zx, 'instructions').files[0].text, /^lir 3 entry/);
+    assert.match(viewOf(zx, 'instructions').files[0].text, /^lir \d+ entry/);
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 

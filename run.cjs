@@ -11,6 +11,262 @@ const RUN_TIMEOUT_MS = 10000;
 // The most one hex view request reads from a binary.
 const HEX_REQUEST_LIMIT = 1024 * 1024;
 
+// Locate the most useful bytes in an ELF. A named main function wins over
+// startup code, followed by .text and finally the executable entry segment.
+// Every offset and table is checked before it is read; bad files return null.
+function elfCodeStart(input) {
+  try {
+    if (!Buffer.isBuffer(input)) return null;
+    const data = input;
+    if (data.length < 16 || data[0] !== 0x7f || data[1] !== 0x45 ||
+        data[2] !== 0x4c || data[3] !== 0x46 || data[6] !== 1) return null;
+    const elfClass = data[4];
+    const encoding = data[5];
+    if ((elfClass !== 1 && elfClass !== 2) || (encoding !== 1 && encoding !== 2)) return null;
+    const little = encoding === 1;
+    const is64 = elfClass === 2;
+    const headerSize = is64 ? 64 : 52;
+    const sectionSize = is64 ? 64 : 40;
+    const programSize = is64 ? 56 : 32;
+    const symbolSize = is64 ? 24 : 16;
+    const fits = (offset, length) => Number.isSafeInteger(offset) && Number.isSafeInteger(length) &&
+      offset >= 0 && length >= 0 && offset <= data.length && length <= data.length - offset;
+    const u16 = (offset) => fits(offset, 2) ?
+      (little ? data.readUInt16LE(offset) : data.readUInt16BE(offset)) : null;
+    const u32 = (offset) => fits(offset, 4) ?
+      (little ? data.readUInt32LE(offset) : data.readUInt32BE(offset)) : null;
+    const word = (offset) => {
+      if (!is64) return u32(offset);
+      if (!fits(offset, 8)) return null;
+      const value = little ? data.readBigUInt64LE(offset) : data.readBigUInt64BE(offset);
+      return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : null;
+    };
+    const tableFits = (offset, entrySize, count) => Number.isSafeInteger(count) && count >= 0 &&
+      Number.isSafeInteger(entrySize) && entrySize > 0 && Number.isSafeInteger(offset) &&
+      offset >= 0 && offset <= data.length && count <= Math.floor((data.length - offset) / entrySize);
+    const cString = (offset, size, at) => {
+      if (!fits(offset, size) || !Number.isSafeInteger(at) || at < 0 || at >= size) return null;
+      const start = offset + at;
+      const length = data.subarray(start, offset + size).indexOf(0);
+      return length < 0 ? null : data.toString('ascii', start, start + length);
+    };
+    if (!fits(0, headerSize) || u32(20) !== 1) return null;
+
+    const type = u16(16);
+    const entry = word(24);
+    const programOffset = word(is64 ? 32 : 28);
+    const sectionOffset = word(is64 ? 40 : 32);
+    const elfHeaderSize = u16(is64 ? 52 : 40);
+    const programEntrySize = u16(is64 ? 54 : 42);
+    let programCount = u16(is64 ? 56 : 44);
+    const sectionEntrySize = u16(is64 ? 58 : 46);
+    let sectionCount = u16(is64 ? 60 : 48);
+    let stringSectionIndex = u16(is64 ? 62 : 50);
+    if ([type, entry, programOffset, sectionOffset, elfHeaderSize, programEntrySize, programCount,
+      sectionEntrySize, sectionCount, stringSectionIndex].some((value) => value === null) ||
+      elfHeaderSize < headerSize || !fits(0, elfHeaderSize)) return null;
+
+    const noSections = sectionOffset === 0 && sectionCount === 0;
+    let sections = [];
+    let sectionZero = null;
+    if (!noSections) {
+      if (sectionOffset === 0 || sectionEntrySize < sectionSize ||
+          !tableFits(sectionOffset, sectionEntrySize, 1)) return null;
+      sectionZero = sectionOffset;
+      if (sectionCount === 0) sectionCount = word(sectionZero + (is64 ? 32 : 20));
+      if (stringSectionIndex === 0xffff) stringSectionIndex = u32(sectionZero + (is64 ? 40 : 24));
+      if (!Number.isSafeInteger(sectionCount) || sectionCount <= 0 ||
+          !Number.isSafeInteger(stringSectionIndex) || stringSectionIndex >= sectionCount ||
+          !tableFits(sectionOffset, sectionEntrySize, sectionCount)) return null;
+      for (let index = 0; index < sectionCount; index++) {
+        const header = sectionOffset + index * sectionEntrySize;
+        const section = {
+          index,
+          nameOffset: u32(header),
+          type: u32(header + 4),
+          flags: word(header + 8),
+          address: word(header + (is64 ? 16 : 12)),
+          offset: word(header + (is64 ? 24 : 16)),
+          size: word(header + (is64 ? 32 : 20)),
+          link: u32(header + (is64 ? 40 : 24)),
+          entrySize: word(header + (is64 ? 56 : 36)),
+          name: '',
+        };
+        if (Object.values(section).some((value) => value === null)) return null;
+        sections.push(section);
+      }
+      if (stringSectionIndex > 0) {
+        const strings = sections[stringSectionIndex];
+        if (strings.type !== 3 || !fits(strings.offset, strings.size)) return null;
+        for (const section of sections) {
+          section.name = cString(strings.offset, strings.size, section.nameOffset);
+          if (section.name === null) return null;
+        }
+      }
+
+      let goMain = null;
+      const symbolTables = sections.filter((section) => section.type === 2 || section.type === 11)
+        .sort((left, right) => left.type - right.type);
+      for (const table of symbolTables) {
+        if (table.entrySize < symbolSize || table.size % table.entrySize !== 0 ||
+            !fits(table.offset, table.size) || table.link >= sections.length) return null;
+        const names = sections[table.link];
+        if (names.type !== 3 || !fits(names.offset, names.size)) return null;
+        const count = table.size / table.entrySize;
+        for (let index = 0; index < count; index++) {
+          const symbol = table.offset + index * table.entrySize;
+          const nameOffset = u32(symbol);
+          const info = fits(symbol + (is64 ? 4 : 12), 1) ? data[symbol + (is64 ? 4 : 12)] : null;
+          const sectionIndex = u16(symbol + (is64 ? 6 : 14));
+          const value = word(symbol + (is64 ? 8 : 4));
+          if ([nameOffset, info, sectionIndex, value].some((item) => item === null)) return null;
+          if ((info & 0x0f) !== 2 || sectionIndex <= 0 || sectionIndex >= sections.length) continue;
+          const name = cString(names.offset, names.size, nameOffset);
+          if (name === null) return null;
+          if (name !== 'main' && name !== 'main.main') continue;
+          const target = sections[sectionIndex];
+          const delta = type === 1 ? value : value - target.address;
+          const offset = target.offset + delta;
+          if (!Number.isSafeInteger(delta) || delta < 0 || delta >= target.size ||
+              target.type === 8 || !fits(offset, 1)) continue;
+          const found = { offset, label: `${name} at 0x${offset.toString(16)} (${target.name || 'code'})`,
+            toggleLabel: 'Show ELF headers' };
+          if (name === 'main') return found;
+          if (!goMain) goMain = found;
+        }
+      }
+      if (goMain) return goMain;
+
+      const text = sections.filter((section) => section.name === '.text' && (section.flags & 4) &&
+        section.size > 0 && fits(section.offset, section.size))
+        .sort((left, right) => left.offset - right.offset)[0];
+      if (text) return { offset: text.offset,
+        label: `code starts at 0x${text.offset.toString(16)} (.text)`,
+        toggleLabel: 'Show ELF headers' };
+    }
+
+    if (programCount === 0xffff) {
+      programCount = sectionZero === null ? null : u32(sectionZero + (is64 ? 44 : 28));
+    }
+    if (!Number.isSafeInteger(programCount) || programCount <= 0 || programOffset <= 0 ||
+        programEntrySize < programSize ||
+        !tableFits(programOffset, programEntrySize, programCount)) return null;
+    for (let index = 0; index < programCount; index++) {
+      const header = programOffset + index * programEntrySize;
+      const segmentType = u32(header);
+      const flags = u32(header + (is64 ? 4 : 24));
+      const offset = word(header + (is64 ? 8 : 4));
+      const address = word(header + (is64 ? 16 : 8));
+      const fileSize = word(header + (is64 ? 32 : 16));
+      const memorySize = word(header + (is64 ? 40 : 20));
+      if ([segmentType, flags, offset, address, fileSize, memorySize]
+        .some((value) => value === null)) return null;
+      if (segmentType !== 1 || !(flags & 1) || memorySize <= 0 || entry < address ||
+          entry - address >= memorySize) continue;
+      const entryDelta = entry - address;
+      if (fileSize <= 0 || entryDelta >= fileSize || !fits(offset, fileSize)) return null;
+      return { offset, label: `code starts at 0x${offset.toString(16)} (entry segment)`,
+        toggleLabel: 'Show ELF headers' };
+    }
+  } catch {}
+  return null;
+}
+
+function wasmCodeStart(data) {
+  try {
+    if (!Buffer.isBuffer(data) || data.length < 8 ||
+        !data.subarray(0, 8).equals(Buffer.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]))) return null;
+    const varuint = (offset) => {
+      let value = 0;
+      let scale = 1;
+      for (let index = 0; index < 5 && offset + index < data.length; index++) {
+        const byte = data[offset + index];
+        if (index === 4 && (byte & 0xf0)) return null;
+        value += (byte & 0x7f) * scale;
+        if (!(byte & 0x80)) return { value, next: offset + index + 1 };
+        scale *= 128;
+      }
+      return null;
+    };
+    let offset = 8;
+    while (offset < data.length) {
+      const id = data[offset++];
+      const length = varuint(offset);
+      if (!length || length.value > data.length - length.next) return null;
+      const end = length.next + length.value;
+      if (id === 10 && length.value > 0) return { offset: length.next,
+        label: `code starts at 0x${length.next.toString(16)} (Wasm code section)`,
+        toggleLabel: 'Show full file' };
+      offset = end;
+    }
+  } catch {}
+  return null;
+}
+
+function zxInstructionStart(data) {
+  try {
+    if (!Buffer.isBuffer(data) || data.length < 64 || data[0] !== 0x5a || data[1] !== 0x58 ||
+        data[2] !== 0 || data[3] !== 0 || data.readUInt32LE(4) !== 28 ||
+        data.readUInt32LE(8) !== 64 || data.readUInt32LE(12) !== 32 ||
+        data.readBigUInt64LE(16) !== 1n || data.readUInt32LE(36) !== 0 ||
+        data.readBigUInt64LE(40) !== BigInt(data.length) || data.readBigUInt64LE(48) !== 64n ||
+        data.readUInt32LE(56) !== 1 || data.readUInt32LE(60) !== 0) return null;
+    const count = data.readUInt32LE(32);
+    if (count < 3 || count > 1024 || count > Math.floor((data.length - 64) / 32)) return null;
+    let previousKind = 0;
+    let previousEnd = 64 + count * 32;
+    let program = null;
+    for (let index = 0; index < count; index++) {
+      const record = 64 + index * 32;
+      const kind = data.readUInt32LE(record);
+      const flags = data.readUInt32LE(record + 4);
+      const offset64 = data.readBigUInt64LE(record + 8);
+      const length64 = data.readBigUInt64LE(record + 16);
+      const alignment = data.readUInt32LE(record + 24);
+      if (offset64 > BigInt(Number.MAX_SAFE_INTEGER) || length64 > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+      const offset = Number(offset64);
+      const length = Number(length64);
+      if (kind <= previousKind || flags > 1 || alignment === 0 || alignment > 4096 ||
+          (alignment & (alignment - 1)) !== 0 || offset % alignment !== 0 ||
+          offset < previousEnd || length > data.length - offset || data.readUInt32LE(record + 28) !== 0) return null;
+      for (let byte = previousEnd; byte < offset; byte++) if (data[byte] !== 0) return null;
+      if (kind === 2 && (flags & 1) && length > 0) program = offset;
+      previousKind = kind;
+      previousEnd = offset + length;
+    }
+    if (previousEnd !== data.length || program === null) return null;
+    return { offset: program,
+      label: `instructions start at 0x${program.toString(16)} (ZX program section)`,
+      toggleLabel: 'Show full file' };
+  } catch {}
+  return null;
+}
+
+function binaryContentStart(data) {
+  if (!Buffer.isBuffer(data) || data.length < 4) return null;
+  if (data[0] === 0x7f && data[1] === 0x45 && data[2] === 0x4c && data[3] === 0x46) {
+    return elfCodeStart(data);
+  }
+  if (data[0] === 0 && data[1] === 0x61 && data[2] === 0x73 && data[3] === 0x6d) {
+    return wasmCodeStart(data);
+  }
+  if (data[0] === 0x5a && data[1] === 0x58 && data[2] === 0 && data[3] === 0) {
+    return zxInstructionStart(data);
+  }
+  return null;
+}
+
+// Shared by the webview and unit tests. Passing a goto offset inside a hidden
+// prefix reveals the headers before the scroll position is calculated.
+const HEX_VIEW_SOURCE = String.raw`
+function hexWindow(codeStart, showFullFile, gotoOffset) {
+  const code = Number.isSafeInteger(codeStart) && codeStart > 0 ? codeStart : 0;
+  const reveal = Number.isSafeInteger(gotoOffset) && gotoOffset >= 0 && gotoOffset < code;
+  const fullFile = Boolean(showFullFile || reveal);
+  return { showFullFile: fullFile, start: fullFile ? 0 : code };
+}
+`;
+
 // `ziran bundle --root . --entry hello:main -o hello.zx hello.zi`, then
 // `ziran run hello.zx`: the file's main on the portable runtime.
 function runSteps(command, file, paths, bundle, project = false) {
@@ -132,7 +388,7 @@ function runHtml(nonce) {
   .caption:empty { display: none; }
   [hidden] { display: none !important; }
   .hex-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; color: var(--vscode-descriptionForeground); }
-  .hex-bar input { color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); padding: 3px 6px; width: 14em; }
+  .hex-bar input[type="text"] { color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); padding: 3px 6px; width: 14em; }
   .hex-scroll { position: relative; height: 60vh; overflow: auto; border: 1px solid var(--vscode-panel-border); background: var(--vscode-textCodeBlock-background, transparent); }
   #hex-spacer { width: 1px; }
   #hex-rows { position: absolute; left: 0; top: 0; margin: 0; border: 0; padding: 0 10px; line-height: 18px; overflow: visible; background: transparent; }
@@ -161,10 +417,11 @@ function runHtml(nonce) {
 <div class="file-row" id="file-row"></div>
 <div class="caption" id="caption"></div>
 <pre id="code"></pre>
-<div id="hex" hidden><div class="hex-bar"><span id="hex-title"></span><input id="hex-goto" placeholder="Go to offset (hex)" aria-label="Go to offset"></div>
+<div id="hex" hidden><div class="hex-bar"><span id="hex-title"></span><span id="hex-code"></span><label id="hex-headers-label" hidden><input id="hex-headers" type="checkbox"> <span id="hex-headers-text">Show full file</span></label><input id="hex-goto" type="text" placeholder="Go to offset (hex)" aria-label="Go to offset"></div>
 <div class="hex-scroll" id="hex-scroll" tabindex="0" role="region" aria-label="Hex view"><div id="hex-spacer"></div><pre id="hex-rows"></pre></div></div></details>
 <script nonce="${nonce}">
 ${HIGHLIGHT_SOURCE}
+${HEX_VIEW_SOURCE}
   const api = acquireVsCodeApi();
   const byId = (id) => document.getElementById(id);
   const saved = api.getState() || {};
@@ -172,7 +429,9 @@ ${HIGHLIGHT_SOURCE}
   let selected = saved.selected || '';
   const files = saved.files || {};
   const views = saved.views || {};
-  const remember = () => api.setState({ selected, files, views, codeOpen: byId('code-section').open });
+  let showFullFile = saved.showFullFile === true;
+  const remember = () => api.setState({ selected, files, views, showFullFile,
+    codeOpen: byId('code-section').open });
   if (saved.codeOpen === false) byId('code-section').open = false;
   byId('code-section').addEventListener('toggle', () => { remember(); renderHex(); });
 
@@ -183,7 +442,8 @@ ${HIGHLIGHT_SOURCE}
   const HEX_MAX_HEIGHT = 8000000;
   const hexPages = new Map();
   let hex = null;
-  const hexRows = () => Math.max(1, Math.ceil(hex.size / 16));
+  const hexStart = () => hexWindow(hex.contentStart, showFullFile).start;
+  const hexRows = () => Math.max(1, Math.ceil(Math.max(0, hex.size - hexStart()) / 16));
   const hexScaled = () => hexRows() * HEX_ROW > HEX_MAX_HEIGHT;
   const hexVisible = () => Math.max(1, Math.ceil(byId('hex-scroll').clientHeight / HEX_ROW));
   const hexFirst = () => {
@@ -220,23 +480,34 @@ ${HIGHLIGHT_SOURCE}
     if (!hex || byId('hex').hidden) return;
     const box = byId('hex-scroll');
     const first = hexFirst();
+    const start = hexStart();
     const digits = Math.max(8, Math.max(0, hex.size - 1).toString(16).length);
     const lines = [];
-    for (let row = first; row < first + hexVisible() + 2 && row * 16 < hex.size; row++) {
-      lines.push(hexLine(row * 16, digits));
+    for (let row = first; row < first + hexVisible() + 2 && start + row * 16 < hex.size; row++) {
+      lines.push(hexLine(start + row * 16, digits));
     }
     const rows = byId('hex-rows');
     rows.textContent = lines.join('\\n');
     rows.style.top = (hexScaled() ? box.scrollTop : first * HEX_ROW) + 'px';
   }
+  const resetHexGeometry = () => {
+    byId('hex-spacer').style.height = Math.min(hexRows() * HEX_ROW, HEX_MAX_HEIGHT) + 'px';
+    byId('hex-scroll').scrollTop = 0;
+    renderHex();
+  };
   const showHex = (file) => {
     byId('code').hidden = true;
     byId('hex').hidden = false;
     if (!hex || hex.key !== file.binary.key) {
-      hex = { key: file.binary.key, size: file.binary.size };
+      const hasContentStart = Number.isSafeInteger(file.binary.contentStart);
+      hex = { key: file.binary.key, size: file.binary.size,
+        contentStart: hasContentStart ? file.binary.contentStart : 0 };
       byId('hex-title').textContent = file.name + ' · ' + file.binary.size.toLocaleString() + ' bytes';
-      byId('hex-spacer').style.height = Math.min(hexRows() * HEX_ROW, HEX_MAX_HEIGHT) + 'px';
-      byId('hex-scroll').scrollTop = 0;
+      byId('hex-code').textContent = hasContentStart ? file.binary.contentLabel : '';
+      byId('hex-headers-label').hidden = !hasContentStart || file.binary.contentStart <= 0;
+      byId('hex-headers-text').textContent = file.binary.toggleLabel || 'Show full file';
+      byId('hex-headers').checked = showFullFile;
+      resetHexGeometry();
     }
     renderHex();
   };
@@ -248,14 +519,29 @@ ${HIGHLIGHT_SOURCE}
   };
   byId('hex-scroll').addEventListener('scroll', scheduleHex);
   window.addEventListener('resize', scheduleHex);
+  byId('hex-headers').addEventListener('change', (event) => {
+    if (!hex || hex.contentStart <= 0) return;
+    showFullFile = event.target.checked;
+    remember();
+    resetHexGeometry();
+  });
   byId('hex-goto').addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' || !hex) return;
     const offset = parseInt(event.target.value.trim().replace(/^0x/i, ''), 16);
     if (!Number.isFinite(offset) || offset < 0) return;
-    const row = Math.min(hexRows() - 1, Math.floor(offset / 16));
+    const wanted = Math.min(Math.max(0, hex.size - 1), offset);
+    const window = hexWindow(hex.contentStart, showFullFile, wanted);
+    if (window.showFullFile !== showFullFile) {
+      showFullFile = window.showFullFile;
+      byId('hex-headers').checked = showFullFile;
+      remember();
+      resetHexGeometry();
+    }
+    const row = Math.min(hexRows() - 1, Math.max(0, Math.floor((wanted - hexStart()) / 16)));
     const box = byId('hex-scroll');
-    const last = Math.max(1, hexRows() - hexVisible());
-    box.scrollTop = hexScaled() ? row / last * (HEX_MAX_HEIGHT - box.clientHeight) : row * HEX_ROW;
+    const last = Math.max(0, hexRows() - hexVisible());
+    const top = Math.min(row, last);
+    box.scrollTop = hexScaled() ? top / Math.max(1, last) * (HEX_MAX_HEIGHT - box.clientHeight) : top * HEX_ROW;
     renderHex();
   });
   const decode = (text) => {
@@ -493,7 +779,7 @@ class RunPreview {
 
   // Binaries stay on disk; the webview receives a key and size and asks for
   // pages of bytes by key.
-  register(results) {
+  async register(results) {
     this.generation++;
     this.binaries = new Map();
     for (const result of results) {
@@ -502,7 +788,11 @@ class RunPreview {
           if (!file.binary?.path) continue;
           const key = `${this.generation}:${result.id}:${item.id}:${file.name}`;
           this.binaries.set(key, file.binary.path);
-          file.binary = { key, size: file.binary.size };
+          let content = null;
+          try { content = binaryContentStart(await fs.readFile(file.binary.path)); } catch {}
+          file.binary = { key, size: file.binary.size,
+            ...(content ? { contentStart: content.offset, contentLabel: content.label,
+              toggleLabel: content.toggleLabel } : {}) };
         }
       }
     }
@@ -595,7 +885,7 @@ class RunPreview {
         this.inspectIr(command, paths),
         program,
       ]);
-      this.state.results = this.register(results);
+      this.state.results = await this.register(results);
     } catch (error) {
       Object.assign(this.state, { status: 'Run failed', problems: error.message, failed: true });
     } finally {
@@ -647,4 +937,5 @@ function activateRun(context, vscode) {
   );
 }
 
-module.exports = { HIGHLIGHT_SOURCE, activateRun, execute, irArgs, mainLine, runHtml, runSteps };
+module.exports = { HEX_VIEW_SOURCE, HIGHLIGHT_SOURCE, activateRun, binaryContentStart,
+  elfCodeStart, execute, irArgs, mainLine, runHtml, runSteps, wasmCodeStart, zxInstructionStart };

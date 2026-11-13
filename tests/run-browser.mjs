@@ -89,17 +89,24 @@ try {
     assert.match(await code(), /\.text|\.section/);
     assert.match(await run.locator('#caption').textContent(), /-S, with the flags ziran compile-commands reports/);
     await view('Binary').click();
-    await firstRow(/^00000000  7f 45 4c 46 /);
+    await run.waitForFunction(() => /main at 0x[0-9a-f]+ \(\.text\)/
+      .test(document.querySelector('#hex-code').textContent));
+    const cStart = parseInt((await run.locator('#hex-code').textContent()).match(/0x([0-9a-f]+)/)[1], 16);
+    await firstRow(new RegExp('^' + cStart.toString(16).padStart(8, '0') + '  '));
+    assert.equal(await run.locator('#hex-headers').isChecked(), false);
     assert.match(await run.locator('#hex-title').textContent(), /^hello · [\d,.]+ bytes$/);
 
     await tab('Go').click();
     await view('Assembly').click();
     assert.match(await code(), /STEXT/);
     await view('Binary').click();
-    await firstRow(/^00000000  7f 45 4c 46 /);
+    await run.waitForFunction(() => /main\.main at 0x[0-9a-f]+ \(\.text\)/
+      .test(document.querySelector('#hex-code').textContent));
+    const goStart = parseInt((await run.locator('#hex-code').textContent()).match(/0x([0-9a-f]+)/)[1], 16);
+    await firstRow(new RegExp('^' + goStart.toString(16).padStart(8, '0') + '  '));
     // A megabyte-sized binary scrolls without drawing every row.
     const total = await run.evaluate(() => document.querySelector('#hex-spacer').style.height);
-    assert.ok(parseInt(total) > 100000, total);
+    assert.ok(parseFloat(total) > 100000, total);
     assert.ok((await rows()).split('\n').length < 200);
     await run.locator('#hex-scroll').evaluate((box) => { box.scrollTop = box.scrollHeight; });
     await run.waitForFunction(() => {
@@ -109,12 +116,20 @@ try {
     await run.locator('#hex-goto').fill('40');
     await run.locator('#hex-goto').press('Enter');
     await firstRow(/^00000040  /);
+    assert.equal(await run.locator('#hex-headers').isChecked(), true);
+    await run.locator('#hex-headers').uncheck();
+    await firstRow(new RegExp('^' + goStart.toString(16).padStart(8, '0') + '  '));
 
     await tab('ZIR').click();
     assert.match(await code(), /function main/);
     await tab('Wasm').click();
     assert.match(await code(), /\(module/);
     await view('Binary').click();
+    await run.waitForFunction(() => /code starts at 0x[0-9a-f]+ \(Wasm code section\)/
+      .test(document.querySelector('#hex-code').textContent));
+    const wasmStart = parseInt((await run.locator('#hex-code').textContent()).match(/0x([0-9a-f]+)/)[1], 16);
+    await firstRow(new RegExp('^' + wasmStart.toString(16).padStart(8, '0') + '  '));
+    await run.locator('#hex-headers').check();
     await firstRow(/^00000000  00 61 73 6d /);
     await tab('ZX').click();
     assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(), ['Listing', 'Instructions ✕', 'Binary']);
@@ -128,11 +143,28 @@ try {
     await fs.writeFile(path.join(runtime, 'edit'), 'main :: () { print("Saved!\\n"); }\n');
     await run.waitForFunction(() => document.querySelector('#screen').textContent === 'Saved!\n');
     assert.equal(await tab('Wasm').getAttribute('aria-selected'), 'true');
+    await tab('C').click();
+    await view('Source').click();
+    await run.waitForFunction(() => document.querySelector('#code').textContent.includes('Saved!'),
+      null, { timeout: 180000 });
+    await tab('Wasm').click();
+    await view('Binary').click();
+    assert.equal(await run.locator('#hex-headers').isChecked(), true);
+    await run.waitForFunction(() => /code starts at 0x[0-9a-f]+ \(Wasm code section\)/
+      .test(document.querySelector('#hex-code').textContent));
 
     // A module without main: a clear message naming its importing program.
     const noMain = "frame.zi has no main; it's a module. Run a program that imports it, such as desktop_frame.zi.";
-    await fs.writeFile(path.join(runtime, 'open'), path.join(project, 'frame.zi'));
-    await run.waitForFunction((text) => document.querySelector('#screen').textContent === text, noMain, { timeout: 180000 });
+    const openRequest = path.join(runtime, 'open');
+    await fs.writeFile(openRequest, path.join(project, 'frame.zi'));
+    try {
+      await run.waitForFunction((text) => document.querySelector('#screen').textContent === text,
+        noMain, { timeout: 180000 });
+    } catch (error) {
+      let pending = false;
+      try { await fs.access(openRequest); pending = true; } catch {}
+      throw new Error(`${error.message}; extension host exited=${child.exitCode}; open request pending=${pending}; ${errors}`);
+    }
     assert.equal(await run.locator('#status').textContent(), 'No main to run');
     await run.waitForFunction(() => document.querySelector('#tabs').textContent.includes('Wasm ✕'), null, { timeout: 180000 });
     await tab('Wasm ✕').click();
