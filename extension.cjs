@@ -1,13 +1,14 @@
 const fs = require('node:fs/promises');
+const { existsSync } = require('node:fs');
 const path = require('node:path');
 const vscode = require('vscode');
-const { importAt, mappedImportIds, moduleIds, parseModuleMap, resolveMapped,
-  resolveModule } = require('./module-index.cjs');
+const { importAt, mappedImportIds, moduleIds, moduleSource, packageCandidates, packageEntries,
+  packageModuleIds, parseModuleMap, resolveMapped, resolveModule } = require('./module-index.cjs');
 const { activatePreview, runCommand } = require('./preview.cjs');
-const { commandStd, modulePaths, packageRoot, ziranCommand } = require('./targets.cjs');
+const { commandStd, modulePaths, packageModulePaths, packageRoot, ziranCommand } = require('./targets.cjs');
 const { activateRun } = require('./run.cjs');
 const { activateZirEditor } = require('./zir-editor.cjs');
-const { apiSymbols, docComment, findSymbol, nameAt } = require('./symbols.cjs');
+const { apiImports, apiSymbols, docComment, findSymbol, nameAt, qualifierBefore } = require('./symbols.cjs');
 const { diagnosticRecords, diagnosticRange, diagnosticActions } = require('./diagnostics.cjs');
 
 async function collect(directory, files) {
@@ -52,7 +53,10 @@ async function moduleDirectories(document) {
   }
   const std = commandStd(await ziranCommand(document.uri.fsPath, vscode));
   if (std) paths.push(std);
-  return { roots, paths: [...new Set(paths)] };
+  // `kryon/text` imports of a file outside a project: NAME=DIR paths.
+  const packages = await packageRoot(document.uri.fsPath) ? [] :
+    await packageModulePaths(document.uri.fsPath, vscode);
+  return { roots, paths: [...new Set(paths)], packages };
 }
 
 // The project's import map, written by `ziran check --project`.
@@ -68,9 +72,10 @@ async function projectModuleMap(file) {
 // A diagnostic names its file relative to the check's root: the file's
 // directory for a lone file, the package's first module root (normally
 // src) under --project.
-async function diagnosticPath(file, project, relative) {
+async function diagnosticPath(file, project, relative, extra = []) {
   const bases = [path.dirname(file)];
   if (project) bases.push(path.join(project, 'src'), project);
+  bases.push(...extra);
   for (const base of bases) {
     const candidate = path.resolve(base, relative);
     try { await fs.access(candidate); return candidate; } catch {}
@@ -88,11 +93,14 @@ async function checkDocument(document, diagnostics) {
   const command = await ziranCommand(file, vscode);
   const project = file.endsWith('.zi') ? await packageRoot(file) : null;
   const args = ['check', '--diagnostics=json'];
+  let bases = [];
   if (project) {
     args.push('--project');
   } else {
     args.push('--root', path.dirname(file));
-    for (const entry of await modulePaths(file, command, vscode)) args.push('--module-path', entry);
+    const paths = await modulePaths(file, command, vscode);
+    bases = packageEntries(paths).map((entry) => entry.directory);
+    for (const entry of paths) args.push('--module-path', entry);
   }
   args.push(file);
   const result = await runCommand(command, args, project || path.dirname(file));
@@ -100,7 +108,7 @@ async function checkDocument(document, diagnostics) {
   if (result.code === null) { diagnostics.delete(document.uri); return; }
   const found = new Map();
   for (const item of diagnosticRecords(`${result.stdout}\n${result.stderr}`)) {
-    const target = item.path ? await diagnosticPath(file, project, item.path) : file;
+    const target = item.path ? await diagnosticPath(file, project, item.path, bases) : file;
     const diagnostic = new vscode.Diagnostic(diagnosticRange(vscode, item), item.message,
       item.severity === 'warning' ? vscode.DiagnosticSeverity.Warning :
         vscode.DiagnosticSeverity.Error);
@@ -109,7 +117,7 @@ async function checkDocument(document, diagnostics) {
     diagnostic.relatedInformation = [];
     for (const related of Array.isArray(item.related) ? item.related : []) {
       if (typeof related.path !== 'string' || typeof related.message !== 'string') continue;
-      const relatedFile = await diagnosticPath(file, project, related.path);
+      const relatedFile = await diagnosticPath(file, project, related.path, bases);
       diagnostic.relatedInformation.push(new vscode.DiagnosticRelatedInformation(
         new vscode.Location(vscode.Uri.file(relatedFile), diagnosticRange(vscode, related)),
         related.message));
@@ -119,7 +127,7 @@ async function checkDocument(document, diagnostics) {
       if (typeof edit.path !== 'string' || typeof edit.replacement !== 'string' ||
           typeof edit.original !== 'string') continue;
       diagnostic.edits.push({ ...edit,
-        uri: vscode.Uri.file(await diagnosticPath(file, project, edit.path)),
+        uri: vscode.Uri.file(await diagnosticPath(file, project, edit.path, bases)),
         range: diagnosticRange(vscode, edit) });
     }
     if (!found.has(target)) found.set(target, []);
@@ -142,21 +150,32 @@ async function programSymbols(document) {
     const command = await ziranCommand(file, vscode);
     const project = file.endsWith('.zi') ? await packageRoot(file) : null;
     const args = ['api', '--json'];
+    let paths = [];
     if (project) {
       args.push('--project');
     } else {
       args.push('--root', path.dirname(file));
-      for (const entry of await modulePaths(file, command, vscode)) args.push('--module-path', entry);
+      paths = await modulePaths(file, command, vscode);
+      for (const entry of paths) args.push('--module-path', entry);
     }
     args.push(file);
     const run = await runCommand(command, args, project || path.dirname(file));
     const symbols = apiSymbols(run.stdout || '');
+    const map = project ? await projectModuleMap(file) : null;
+    const sources = new Map();
     let own = null;
     for (const symbol of symbols) {
-      symbol.file = await diagnosticPath(file, project, symbol.path);
-      if (!own && await diagnosticPath(file, project, symbol.source) === file) own = symbol.module;
+      // A package module's declarations live in its own file, by its own path.
+      if (!sources.has(symbol.module)) sources.set(symbol.module, moduleSource(symbol.module, map, paths, existsSync));
+      const source = sources.get(symbol.module);
+      symbol.file = source ? (path.basename(symbol.path) === path.basename(source) ? source :
+        path.resolve(path.dirname(source), symbol.path)) : await diagnosticPath(file, project, symbol.path);
+      if (!own && !source && await diagnosticPath(file, project, symbol.source) === file) own = symbol.module;
     }
-    return { symbols, own };
+    // Alias -> module for the file's `Alias :: #import "..."` declarations.
+    const aliases = new Map(apiImports(run.stdout || '')
+      .filter((item) => item.module === own).map((item) => [item.alias, item.target]));
+    return { symbols, own, aliases };
   })();
   symbolCache.set(key, { version: document.version, result });
   return result;
@@ -167,8 +186,11 @@ const COMPLETION_KIND = { function: 'Function', type: 'Struct', constant: 'Const
 async function symbolAtPosition(document, position) {
   const found = nameAt(document.lineAt(position.line).text, position.character);
   if (!found) return null;
-  const { symbols, own } = await programSymbols(document);
-  const symbol = findSymbol(symbols, found.name, found.qualifier ? null : own);
+  const { symbols, own, aliases } = await programSymbols(document);
+  const module = found.qualifier ? aliases.get(found.qualifier) : own;
+  const symbol = found.qualifier && module ?
+    symbols.find((item) => item.module === module && item.name === found.name) || null :
+    findSymbol(symbols, found.name, found.qualifier ? null : own);
   return symbol ? { symbol, found } : null;
 }
 
@@ -193,13 +215,14 @@ function activate(context) {
     const folder = vscode.workspace.getWorkspaceFolder(document.uri);
     const key = folder ? '' : path.dirname(document.uri.fsPath);
     if (!caches.has(key)) caches.set(key, (async () => {
-      const { roots, paths } = await moduleDirectories(document);
+      const { roots, paths, packages } = await moduleDirectories(document);
       const found = await vscode.workspace.findFiles('**/*.{zi,zir}',
         '**/{.git,build,dist,node_modules}/**');
       const files = new Set(found.map((uri) => uri.fsPath));
       if (key) await collectDirectory(key, files);
       for (const directory of paths) await collect(directory, files);
-      return { files: [...files], roots, paths };
+      for (const entry of packageEntries(packages)) await collect(entry.directory, files);
+      return { files: [...files], roots, paths, packages };
     })());
     return caches.get(key);
   };
@@ -208,10 +231,14 @@ function activate(context) {
     async provideCompletionItems(document, position) {
       const imported = importAt(document.lineAt(position.line).text, position.character);
       if (!imported) {
-        // Procedures, types, constants, and globals the program declares.
-        const { symbols } = await programSymbols(document);
+        // Procedures, types, constants, and globals the program declares;
+        // after `Alias.` only those of the module Alias imports.
+        const { symbols, aliases } = await programSymbols(document);
+        const qualifier = qualifierBefore(document.lineAt(position.line).text.slice(0, position.character));
+        const module = qualifier ? aliases.get(qualifier) : null;
         const seen = new Set();
-        return symbols.filter((symbol) => !seen.has(symbol.name) && seen.add(symbol.name))
+        return symbols.filter((symbol) => !module || symbol.module === module)
+          .filter((symbol) => !seen.has(symbol.name) && seen.add(symbol.name))
           .map((symbol) => {
             const item = new vscode.CompletionItem(symbol.name,
               vscode.CompletionItemKind[COMPLETION_KIND[symbol.kind]]);
@@ -231,12 +258,14 @@ function activate(context) {
           return item;
         });
       }
-      const { files, roots, paths } = await index(document);
-      return moduleIds(files, [...roots, ...paths]).map((id) => {
+      const { files, roots, paths, packages } = await index(document);
+      const ids = [...new Set([...packageModuleIds(files, packages), ...moduleIds(files, [...roots, ...paths])])];
+      return ids.map((id) => {
         const item = new vscode.CompletionItem(id, vscode.CompletionItemKind.Module);
         item.range = new vscode.Range(position.line, imported.start,
           position.line, imported.end);
-        const matches = resolveModule(files, id, document.uri.fsPath, roots, paths);
+        const matches = [...packageCandidates(id, packages).filter((file) => files.includes(file)),
+          ...resolveModule(files, id, document.uri.fsPath, roots, paths)];
         if (matches.length) item.detail = matches[0];
         return item;
       });
@@ -254,9 +283,12 @@ function activate(context) {
       const map = await projectModuleMap(document.uri.fsPath);
       let matches = map ? resolveMapped(map, document.uri.fsPath, imported.target) : [];
       if (!matches.length) {
-        const { files, roots, paths } = await index(document);
-        matches = resolveModule(files, imported.target,
-          document.uri.fsPath, roots, paths);
+        const { files, roots, paths, packages } = await index(document);
+        matches = packageCandidates(imported.target, packages).filter((file) => existsSync(file));
+        if (!matches.length) {
+          matches = resolveModule(files, imported.target,
+            document.uri.fsPath, roots, paths);
+        }
       }
       return matches.map((file) => new vscode.Location(vscode.Uri.file(file),
         new vscode.Position(0, 0)));

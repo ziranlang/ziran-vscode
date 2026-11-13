@@ -93,4 +93,26 @@ function findSymbol(symbols, name, preferredModule) {
   return matches.find((symbol) => symbol.module === preferredModule) || matches[0] || null;
 }
 
-module.exports = { apiSymbols, docComment, findSymbol, nameAt, signature };
+// Named imports in `ziran api --json` output: for each module, the alias a
+// `Text :: #import "kryon/text";` declares and the module it resolves to.
+function apiImports(text) {
+  let data;
+  try { data = JSON.parse(text); } catch { return []; }
+  const imports = [];
+  for (const module of (data && data.modules) || []) {
+    for (const item of module.imports || []) {
+      if (!item || item.kind !== 'module' || !item.name) continue;
+      imports.push({ module: module.name, alias: item.name,
+        target: item.resolved_module || item.target, line: item.line || 1 });
+    }
+  }
+  return imports;
+}
+
+// The Alias. a completion is typed after, as in `Text.Dr`, or ''.
+function qualifierBefore(text) {
+  const match = /([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z0-9_]*$/.exec(text);
+  return match && !/[A-Za-z0-9_.]/.test(text[match.index - 1] || '') ? match[1] : '';
+}
+
+module.exports = { apiImports, apiSymbols, docComment, findSymbol, nameAt, qualifierBefore, signature };

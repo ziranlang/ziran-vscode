@@ -2,11 +2,22 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { parse } = require('@iarna/toml');
 const { randomBytes } = require('node:crypto');
 
-function safeEnvironment() {
-  const { DISPLAY, WAYLAND_DISPLAY, ...environment } = process.env;
-  return environment;
+function safeEnvironment(source = process.env) {
+  const { DISPLAY, WAYLAND_DISPLAY, XAUTHORITY, DBUS_SESSION_BUS_ADDRESS, SESSION_MANAGER, ...environment } = source;
+  // VSCode can omit empty values from the extension host environment. Git
+  // requires an explicit value for each numbered key, including an empty one.
+  const count = Number(environment.GIT_CONFIG_COUNT);
+  const validCount = /^[0-9]+$/.test(environment.GIT_CONFIG_COUNT || '') && Number.isSafeInteger(count);
+  for (const key of Object.keys(environment)) {
+    const index = key.match(/^GIT_CONFIG_KEY_([0-9]+)$/)?.[1];
+    if (validCount && index !== undefined && Number(index) < count) {
+      environment['GIT_CONFIG_VALUE_' + index] ??= '';
+    }
+  }
+  return { ...environment, HARMONY_DESKTOP_RECOVERY: '0' };
 }
 
 function runCommand(command, args, cwd) {
@@ -14,8 +25,8 @@ function runCommand(command, args, cwd) {
     const child = spawn(command, args, { cwd, env: safeEnvironment(), windowsHide: true });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (data) => { stdout += data.toString(); });
-    child.stderr.on('data', (data) => { stderr += data.toString(); });
+    child.stdout.on('data', (data) => { stdout = (stdout + data.toString()).slice(-2 * 1024 * 1024); });
+    child.stderr.on('data', (data) => { stderr = (stderr + data.toString()).slice(-2 * 1024 * 1024); });
     child.on('error', (error) => resolve({ code: null, stdout, stderr: error.message }));
     child.on('close', (code) => resolve({ code, stdout, stderr }));
   });
@@ -33,6 +44,10 @@ async function projectRoot(start) {
   } catch { return null; }
   while (true) {
     if (await exists(path.join(directory, 'kryon.toml'))) return directory;
+    try {
+      const manifest = parse(await fs.readFile(path.join(directory, 'ziran.toml'), 'utf8'));
+      if (manifest.package?.tool === 'kryon' || manifest.tool?.kryon) return directory;
+    } catch {}
     const parent = path.dirname(directory);
     if (parent === directory) return null;
     directory = parent;
@@ -55,18 +70,63 @@ async function manifestPath(root, name, fallback) {
   return path.resolve(root, fallback);
 }
 
-async function generatedFiles(root, kind) {
-  const directory = path.join(root, 'build', 'generated', kind);
+async function generatedFiles(root, kind, profile = '', output) {
+  const directory = generatedDirectory(root, kind, profile, output);
   try {
     const files = await fs.readdir(directory);
     return files.filter((file) => file.endsWith(kind === 'c' ? '.c' : '.zir')).sort();
   } catch { return []; }
 }
 
+function generatedDirectory(root, kind, profile = '', output = path.join(root, 'build')) {
+  return path.join(output, 'generated', ...(profile ? [profile] : []), kind);
+}
+
+async function projectBuildDirectory(root) {
+  let parent = path.dirname(root);
+  while (parent !== path.dirname(parent)) {
+    if (path.basename(parent) === 'examples') {
+      const owner = path.dirname(parent);
+      try {
+        const config = parse(await fs.readFile(path.join(owner, 'ziran.toml'), 'utf8'));
+        if (config.package?.name === 'kryon') {
+          return path.join(owner, 'build', 'examples', path.relative(parent, root));
+        }
+      } catch {}
+    }
+    parent = path.dirname(parent);
+  }
+  return path.join(root, 'build');
+}
+
+async function previewBuild(root, requested = '') {
+  const modern = await exists(path.join(root, 'ziran.toml'));
+  const config = parse(await fs.readFile(path.join(root, modern ? 'ziran.toml' : 'kryon.toml'), 'utf8'));
+  const tool = modern ? config.tool?.kryon || {} : config;
+  const profiles = tool.profiles || {};
+  const profile = requested || ['portable_web', 'web', ...Object.keys(profiles)]
+    .find((name) => profiles[name]?.backend === 'canvas');
+  if (!profile || profiles[profile]?.backend !== 'canvas') {
+    throw new Error('Kryon Preview needs a canvas profile (portable_web or web). Set ziran.previewProfile to a canvas profile.');
+  }
+  if (!/^[\w-]+$/.test(profile)) throw new Error('Invalid preview profile name');
+  const name = config.package?.name || config.project?.name || path.basename(root);
+  if (!/^[\w-]+$/.test(name)) throw new Error('Invalid project name');
+  return { profile, artifact: path.join(await projectBuildDirectory(root), `${name}-${profile}.html`) };
+}
+
+function previewInput(root, file) {
+  const relative = path.relative(root, file);
+  const parts = relative.split(path.sep);
+  if (!relative || path.isAbsolute(relative) || parts.includes('..') ||
+      parts.some((part) => ['build', 'node_modules', '.git', '.ziran'].includes(part))) return false;
+  return file.endsWith('.zi') || ['kryon.toml', 'ziran.toml', 'ziran.local.toml', 'ziran.lock'].includes(path.basename(file));
+}
+
 function previewHtml(nonce) {
   return `<!doctype html>
 <html lang="en"><head><meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src blob:; connect-src data: blob:; frame-src 'self'; img-src data: blob:; font-src data:;">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style nonce="${nonce}">
   body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-editor-background); padding: 12px; }
@@ -81,51 +141,20 @@ function previewHtml(nonce) {
   .window-bar { display: flex; align-items: center; gap: 6px; padding: 7px 10px; background: var(--vscode-titleBar-activeBackground, #252526); border-bottom: 1px solid var(--vscode-panel-border); }
   .window-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--vscode-descriptionForeground); opacity: .55; }
   #window-title { margin-left: 8px; font-size: .85rem; }
-  #screen { display: block; max-width: 100%; }
+  #app { width: 100%; height: 70vh; border: 0; background: white; }
   #build-output:empty { display: none; }
   details { margin-top: 16px; }
   summary { cursor: pointer; font-weight: bold; margin-bottom: 8px; }
 </style></head><body>
 <header><h1>Kryon Preview</h1><button id="run">Run again</button><span id="status">Starting…</span></header>
-<h2>Rendered window</h2>
-<div class="window" id="window"><div class="window-bar"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><span id="window-title"></span></div><canvas id="screen" role="img" aria-label="Rendered terminal frame"></canvas></div>
+<div class="window" id="window"><div class="window-bar"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><span id="window-title"></span></div><iframe id="app" title="Interactive Kryon preview" sandbox="allow-scripts allow-pointer-lock"></iframe></div>
 <pre id="build-output"></pre>
-<details><summary>Copyable text output</summary><pre id="output"></pre></details>
 <details><summary>Generated C</summary><select id="c-files" aria-label="Generated C module"></select><pre id="c-source"></pre></details>
 <details><summary>Checked .zir (inspected)</summary><select id="ir-files" aria-label="Checked Ziran module"></select><pre id="ir-source"></pre></details>
 <script nonce="${nonce}">
   const api = acquireVsCodeApi();
   const byId = (id) => document.getElementById(id);
-  let frame = '';
-  const draw = () => {
-    const canvas = byId('screen');
-    const columns = 80;
-    const rows = 24;
-    const cellWidth = Math.min(12, Math.max(4, byId('window').clientWidth / columns));
-    const cellHeight = cellWidth * 1.65;
-    const width = columns * cellWidth;
-    const height = rows * cellHeight;
-    const scale = window.devicePixelRatio || 1;
-    canvas.width = Math.ceil(width * scale);
-    canvas.height = Math.ceil(height * scale);
-    canvas.style.width = width + 'px';
-    canvas.style.height = height + 'px';
-    const context = canvas.getContext('2d');
-    context.setTransform(scale, 0, 0, scale, 0, 0);
-    const theme = getComputedStyle(document.documentElement);
-    context.fillStyle = theme.getPropertyValue('--vscode-terminal-background').trim() || '#10141a';
-    context.fillRect(0, 0, width, height);
-    context.fillStyle = theme.getPropertyValue('--vscode-terminal-foreground').trim() || '#d4d4d4';
-    context.font = Math.floor(cellHeight * .8) + 'px monospace';
-    context.textBaseline = 'top';
-    const lines = frame.split(/\\r?\\n/);
-    for (let row = 0; row < Math.min(rows, lines.length); row++) {
-      const glyphs = Array.from(lines[row]).slice(0, columns);
-      for (let col = 0; col < glyphs.length; col++) {
-        context.fillText(glyphs[col], col * cellWidth, row * cellHeight);
-      }
-    }
-  };
+  let currentHtml;
   const fill = (id, files, selected) => {
     const select = byId(id);
     select.replaceChildren();
@@ -141,11 +170,12 @@ function previewHtml(nonce) {
   window.addEventListener('message', ({ data }) => {
     if (data.type !== 'state') return;
     byId('status').textContent = data.status;
-    byId('output').textContent = data.output;
     byId('build-output').textContent = data.status.startsWith('Up to date') ? '' : data.output;
     byId('window-title').textContent = data.project;
-    frame = data.frame;
-    draw();
+    if (data.html !== currentHtml) {
+      currentHtml = data.html;
+      byId('app').srcdoc = data.html || '';
+    }
     fill('c-files', data.cFiles, data.selectedC);
     fill('ir-files', data.irFiles, data.selectedIr);
     byId('c-source').textContent = data.cSource;
@@ -154,7 +184,6 @@ function previewHtml(nonce) {
   byId('run').addEventListener('click', () => api.postMessage({ type: 'run' }));
   byId('c-files').addEventListener('change', (event) => api.postMessage({ type: 'c', file: event.target.value }));
   byId('ir-files').addEventListener('change', (event) => api.postMessage({ type: 'ir', file: event.target.value }));
-  window.addEventListener('resize', draw);
   api.postMessage({ type: 'ready' });
 </script></body></html>`;
 }
@@ -167,29 +196,29 @@ class Preview {
     this.running = false;
     this.rerun = false;
     this.state = {
-      type: 'state', project: path.basename(root), status: 'Starting…', output: '', frame: '', cFiles: [], irFiles: [],
+      type: 'state', project: path.basename(root), status: 'Starting…', output: '', frame: '', html: '', cFiles: [], irFiles: [],
       selectedC: '', selectedIr: '', cSource: '', irSource: '',
     };
     this.panel = vscode.window.createWebviewPanel('kryonPreview',
       `Preview: ${path.basename(root)}`, vscode.ViewColumn.Beside,
-      { enableScripts: true, retainContextWhenHidden: true });
+      { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] });
     this.panel.webview.html = previewHtml(randomBytes(16).toString('hex'));
+    const watchRoot = vscode.workspace.getWorkspaceFolder?.(vscode.Uri.file(root))?.uri.fsPath || root;
     this.disposables = [
       this.panel.onDidDispose(() => this.dispose()),
       this.panel.webview.onDidReceiveMessage((message) => this.message(message)),
       vscode.workspace.onDidSaveTextDocument((document) => {
-        if (document.uri.fsPath === path.join(root, 'kryon.toml') ||
-            document.uri.fsPath.startsWith(path.join(root, 'src') + path.sep)) {
+        if (document.uri.scheme === 'file' && previewInput(watchRoot, document.uri.fsPath)) {
           this.schedule();
         }
       }),
     ];
-    for (const pattern of ['src/**/*.zi', 'kryon.toml']) {
+    for (const pattern of ['**/*.zi', '**/kryon.toml', '**/ziran{,.local}.toml', '**/ziran.lock']) {
       const watcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(vscode.Uri.file(root), pattern));
-      this.disposables.push(watcher, watcher.onDidChange(() => this.schedule()),
-        watcher.onDidCreate(() => this.schedule()),
-        watcher.onDidDelete(() => this.schedule()));
+        new vscode.RelativePattern(vscode.Uri.file(watchRoot), pattern));
+      const changed = (uri) => { if (previewInput(watchRoot, uri.fsPath)) this.schedule(); };
+      this.disposables.push(watcher, watcher.onDidChange(changed),
+        watcher.onDidCreate(changed), watcher.onDidDelete(changed));
     }
     context.subscriptions.push(this);
     this.run();
@@ -229,15 +258,16 @@ class Preview {
 
   async loadC() {
     try {
-      this.state.cSource = await fs.readFile(path.join(this.root, 'build', 'generated',
-        'c', this.state.selectedC), 'utf8');
+      this.state.cSource = await fs.readFile(path.join(generatedDirectory(this.root, 'c', this.profile, this.outputDirectory), this.state.selectedC), 'utf8');
     } catch (error) { this.state.cSource = error.message; }
   }
 
   async loadIr() {
-    const ziran = await manifestPath(this.root, 'ziran', '../ziran');
-    const file = path.join(this.root, 'build', 'generated', 'ir', this.state.selectedIr);
-    const result = await runCommand(path.join(ziran, 'build', 'bin', 'ziran'),
+    const { ziranCommand } = require('./targets.cjs');
+    const manifest = path.join(this.root, await exists(path.join(this.root, 'ziran.toml')) ? 'ziran.toml' : 'kryon.toml');
+    const command = await ziranCommand(manifest, this.vscode);
+    const file = path.join(generatedDirectory(this.root, 'ir', this.profile, this.outputDirectory), this.state.selectedIr);
+    const result = await runCommand(command,
       ['inspect', file], this.root);
     this.state.irSource = result.code === 0 ? result.stdout : result.stderr;
   }
@@ -254,26 +284,26 @@ class Preview {
       let command = configured.get('kryonCommand', '');
       const local = path.join(os.homedir(), '.local', 'bin', 'kryon');
       if (!command) command = await exists(local) ? local : 'kryon';
-      const profile = configured.get('previewProfile', '');
-      const args = ['run'];
-      if (profile) args.push('--profile', profile);
-      const result = await runCommand(command, args, this.root);
+      const build = await previewBuild(this.root, configured.get('previewProfile', ''));
+      this.profile = build.profile;
+      this.outputDirectory = path.dirname(build.artifact);
+      const result = await runCommand(command, ['build', '--profile', build.profile], this.root);
       if (this.disposed) return;
       this.state.output = (result.stdout + result.stderr).trimEnd();
-      this.state.frame = result.code === 0 ? result.stdout : '';
+      this.state.frame = '';
+      this.state.html = result.code === 0 ? await require('./preview-assets.cjs').previewAssets(build.artifact) : '';
       this.state.status = result.code === 0 ? 'Up to date · reloads on save' :
         `Build or run failed${result.code === null ? '' : ` (exit ${result.code})`}`;
       if (result.code === 0) {
-        this.state.cFiles = await generatedFiles(this.root, 'c');
-        this.state.irFiles = await generatedFiles(this.root, 'ir');
+        this.state.cFiles = await generatedFiles(this.root, 'c', this.profile, this.outputDirectory);
+        this.state.irFiles = await generatedFiles(this.root, 'ir', this.profile, this.outputDirectory);
         if (!this.state.cFiles.includes(this.state.selectedC)) {
           this.state.selectedC = this.state.cFiles.includes('app.c') ? 'app.c' : this.state.cFiles[0] || '';
         }
         if (!this.state.irFiles.includes(this.state.selectedIr)) {
           this.state.selectedIr = this.state.irFiles.includes('app.zir') ? 'app.zir' : this.state.irFiles[0] || '';
         }
-        this.state.cSource = this.state.selectedC ? (await fs.readFile(path.join(
-          this.root, 'build', 'generated', 'c', this.state.selectedC), 'utf8')) : '';
+        this.state.cSource = this.state.selectedC ? (await fs.readFile(path.join(generatedDirectory(this.root, 'c', this.profile, this.outputDirectory), this.state.selectedC), 'utf8')) : '';
         if (this.state.selectedIr) await this.loadIr();
       } else {
         Object.assign(this.state, { cFiles: [], irFiles: [], selectedC: '',
@@ -284,6 +314,7 @@ class Preview {
       this.state.status = 'Preview failed';
       this.state.output = error.message;
       this.state.frame = '';
+      this.state.html = '';
       this.post();
     } finally {
       this.running = false;
@@ -341,7 +372,7 @@ function activatePreview(context, vscode) {
       if (root) break;
     }
     if (!root) {
-      vscode.window.showErrorMessage('Open a folder containing kryon.toml to preview a Kryon project.');
+      vscode.window.showErrorMessage('Open a Kryon app containing ziran.toml or kryon.toml to preview a Kryon project.');
       return;
     }
     if (previews.has(root)) { previews.get(root).reveal(); return; }
@@ -352,4 +383,4 @@ function activatePreview(context, vscode) {
 }
 
 module.exports = { activatePreview, generatedFiles, manifestPath, previewHtml,
-  projectRoot, runCommand, safeEnvironment };
+  projectRoot, runCommand, safeEnvironment, previewBuild, previewInput, Preview };

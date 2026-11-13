@@ -90,6 +90,11 @@ test('run bundles the file\'s main and runs it on the portable runtime', () => {
 test('run pane webview script is valid', () => {
   const html = runHtml('nonce');
   assert.match(html, /class="window"/);
+  assert.match(html, /label: 'ZIR'/);
+  assert.doesNotMatch(html, /label: 'ZX'/);
+  assert.doesNotMatch(html, /id="ir-section"/);
+  assert.match(html, /id="views" role="tablist"/);
+  assert.match(html, /id="hex-scroll"/);
   const script = html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1];
   assert.doesNotThrow(() => new vm.Script(script));
 });
@@ -127,12 +132,45 @@ test('run pane shows hello world output and reruns on save', { skip: !existsSync
     assert.equal(state.output, 'Hello, World!\n');
     assert.equal(state.title, 'hello.zi');
     assert.deepEqual(state.results.map((result) => [result.id, result.ok]), [['c', true], ['go', true]]);
-    assert.match(state.results[0].files[0].text, /Hello, World!/);
+    assert.match(state.results[0].views[0].files[0].text, /Hello, World!/);
+    // Binaries reach the webview as a key and size; it reads pages by key.
+    const binary = state.results[0].views.find((view) => view.id === 'binary').files[0];
+    assert.equal(binary.name, 'hello');
+    assert.equal(binary.binary.path, undefined);
+    assert.ok(binary.binary.size > 1000);
+    await fake.send({ type: 'bytes', key: binary.binary.key, offset: 0, length: 4 });
+    const page = fake.states.at(-1);
+    assert.equal(page.type, 'bytes');
+    assert.deepEqual([...Buffer.from(page.data, 'base64')], [0x7f, 0x45, 0x4c, 0x46]);
+    await fake.send({ type: 'bytes', key: 'unknown', offset: 0, length: 4 });
+    assert.equal(fake.states.at(-1), page);
     assert.equal(state.irModules[0].name, 'hello.zir');
     assert.match(state.irModules[0].text, /function main\(\) -> void/);
     await fs.writeFile(file, 'main :: () {\n    print("% + % = %\\n", 40, 2, 40 + 2);\n}\n');
     fake.save(file);
     await waitFor(() => fake.states.at(-1)?.output === '40 + 2 = 42\n');
+  } finally {
+    fake.close();
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a module without main says so and names a program that imports it', { skip: !existsSync(compiler) }, async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ziran-run-module-'));
+  const file = path.join(directory, 'hello.zi');
+  await fs.writeFile(file, '#program_export\nFrame :: () -> s32 { return 7 }\n');
+  await fs.writeFile(path.join(directory, 'desktop_hello.zi'), '#import "hello"\nmain :: () -> s32 { return Frame() }\n');
+  const fake = fakeVscode(file, compiler, '');
+  try {
+    await fake.commands['ziran.run']();
+    await waitFor(() => fake.states.at(-1)?.status === 'No main to run' && !fake.states.at(-1)?.codeRunning);
+    const state = fake.states.at(-1);
+    assert.equal(state.hasMain, false);
+    assert.equal(state.failed, false);
+    assert.equal(state.noMain,
+      "hello.zi has no main; it's a module. Run a program that imports it, such as desktop_hello.zi.");
+    assert.equal(state.results[0].ok, true);
+    assert.equal(state.results[0].views.find((view) => view.id === 'binary').message, state.noMain);
   } finally {
     fake.close();
     await fs.rm(directory, { recursive: true, force: true });

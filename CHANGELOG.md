@@ -1,5 +1,21 @@
 # Changes
 
+## Unreleased
+
+- Inspect every target in the Run pane: generated C with the C compiler's assembly and the binary, generated Go with `-gcflags=-S` portable assembly and the binary, the `.zx` instruction listing and bytes, and the native backend's lowered listings and disassembly; binaries open in a paged hexadecimal view.
+- Explain that a file without `main` is a module to run from a program that imports it, instead of failing with a missing bundle entry.
+- Resolve `kryon/<package>` imports and `Alias :: #import "…"` lines through the project import map.
+
+- Highlight law names, quantified domains and predicates across continuation lines.
+
+- Browse ZIR and WAT beside C and Go in the Run
+  pane, with readable WebAssembly text and hexadecimal bundle views.
+- Hide compiler lock files and internal directories from generated code views.
+
+- Load generated JavaScript and WebAssembly inside the preview sandbox, refresh changed runtime files on save, and preserve empty Git configuration values lost by VSCode.
+
+- Preview individual Kryon package examples as interactive browser apps, rebuild on source and manifest changes, and recover after build errors.
+
 ## 0.7.1
 
 - Run portable programs as `.zx` files and show the portable file icon for `.zx`.

@@ -60,3 +60,28 @@ test('a project module map resolves package-qualified and standard imports', () 
     assert.ok(ids.includes(id), id);
   }
 });
+
+test('named and using imports are recognized like plain ones', () => {
+  assert.deepEqual(importAt('Text :: #import "kryon/text";', 20),
+    { target: 'kryon/text', start: 17, end: 27 });
+  assert.deepEqual(importAt('using Widgets :: #import "kryon/Widgets";', 30),
+    { target: 'kryon/Widgets', start: 26, end: 39 });
+  assert.equal(importAt('Text :: Draw("x")', 10), null);
+});
+
+test('NAME=DIR paths serve package-qualified imports outside a project', async () => {
+  const { packageCandidates, packageModuleIds, moduleSource } = require('../module-index.cjs');
+  const paths = ['/std', 'kryon=/work/kryon/src', 'kryon=/work/kryon/src/ui'];
+  assert.deepEqual(packageCandidates('kryon/text', paths), [
+    '/work/kryon/src/text.zi', '/work/kryon/src/text/module.zi',
+    '/work/kryon/src/ui/text.zi', '/work/kryon/src/ui/text/module.zi']);
+  assert.deepEqual(packageCandidates('plot/Plot', paths), []);
+  assert.deepEqual(packageCandidates('kryon/../secret', paths), []);
+  assert.deepEqual(packageModuleIds(['/work/kryon/src/text.zi', '/work/kryon/src/ui/button/module.zi',
+    '/work/kryon/src/ui/deep/x/y.zi', '/work/app/main.zi'], paths), ['kryon/button', 'kryon/text']);
+  const map = parseModuleMap('P\tp11e2ac7ed9577d35\t/cache/kryon\nM\tp11e2ac7ed9577d35\ttext\t/cache/kryon/src/text.zi\n');
+  assert.equal(moduleSource('p11e2ac7ed9577d35_text', map, [], () => false), '/cache/kryon/src/text.zi');
+  assert.equal(moduleSource('p59ed40033882ead0_text', null, paths,
+    (file) => file === '/work/kryon/src/ui/text.zi'), '/work/kryon/src/ui/text.zi');
+  assert.equal(moduleSource('hello', map, paths, () => true), null);
+});

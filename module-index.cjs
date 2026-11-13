@@ -1,7 +1,9 @@
 const path = require('node:path');
 
+// The module an import line names, in `#import "text"`,
+// `Text :: #import "kryon/text";` or `using Text :: #import "kryon/text";`.
 function importAt(line, character) {
-  const match = /^\s*#import\s+"([^"]*)/.exec(line);
+  const match = /^\s*(?:using\s+)?(?:[A-Za-z_]\w*\s*::\s*)?#import\s+"([^"]*)/.exec(line);
   if (!match) return null;
   const start = match[0].length - match[1].length;
   if (character < start || character > start + match[1].length) return null;
@@ -114,5 +116,62 @@ function mappedImportIds(map, documentPath) {
   return [...ids].sort();
 }
 
-module.exports = { importAt, mappedImportIds, moduleIds, parseModuleMap,
-  resolveMapped, resolveModule };
+// `NAME=DIR` module paths serve `NAME/MODULE` imports from DIR/MODULE.zi
+// and DIR/MODULE/module.zi, as `ziran --module-path NAME=DIR` does.
+function packageEntries(paths) {
+  const entries = [];
+  for (const entry of paths) {
+    const match = /^([A-Za-z_][\w-]*)=(.+)$/.exec(entry);
+    if (match) entries.push({ name: match[1], directory: match[2] });
+  }
+  return entries;
+}
+
+function packageCandidates(target, paths) {
+  const slash = target.indexOf('/');
+  if (slash <= 0 || target.split('/').includes('..') || target.includes('\\')) return [];
+  const name = target.slice(0, slash);
+  const relative = target.slice(slash + 1).split('/').join(path.sep);
+  const candidates = [];
+  for (const entry of packageEntries(paths)) {
+    if (entry.name !== name) continue;
+    candidates.push(path.join(entry.directory, relative + '.zi'),
+      path.join(entry.directory, relative, 'module.zi'));
+  }
+  return candidates;
+}
+
+// Qualified import ids for the modules FILES holds under each package path.
+function packageModuleIds(files, paths) {
+  const ids = new Set();
+  for (const entry of packageEntries(paths)) {
+    for (const file of files) {
+      const relative = path.relative(entry.directory, file);
+      if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) continue;
+      const parts = relative.split(path.sep);
+      if (parts.length === 1 && /\.zi$/.test(relative)) ids.add(`${entry.name}/${relative.slice(0, -3)}`);
+      if (parts.length === 2 && parts[1] === 'module.zi') ids.add(`${entry.name}/${parts[0]}`);
+    }
+  }
+  return [...ids].sort();
+}
+
+// The file behind a module `ziran api` names. Package modules appear as
+// `p<package id>_<module>`; a project's module map holds that package id,
+// and NAME=DIR paths hold the module by its own name.
+function moduleSource(moduleName, map, paths, existsSync) {
+  const match = /^(p[0-9a-f]{16})_(.+)$/.exec(moduleName || '');
+  if (!match) return null;
+  const mapped = map?.modules.get(`${match[1]}\t${match[2]}`);
+  if (mapped) return mapped;
+  for (const entry of packageEntries(paths)) {
+    for (const candidate of [path.join(entry.directory, match[2] + '.zi'),
+      path.join(entry.directory, match[2], 'module.zi')]) {
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+module.exports = { importAt, mappedImportIds, moduleIds, moduleSource, packageCandidates,
+  packageEntries, packageModuleIds, parseModuleMap, resolveMapped, resolveModule };

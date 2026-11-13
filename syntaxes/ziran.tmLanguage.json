@@ -2,6 +2,7 @@
   "name": "Ziran",
   "scopeName": "source.ziran",
   "patterns": [
+    {"include": "#laws"},
     {"include": "#directives"},
     {"include": "#comments"},
     {"include": "#strings"},
@@ -12,6 +13,80 @@
     {"include": "#operators"}
   ],
   "repository": {
+    "laws": {
+      "patterns": [
+        {
+          "name": "meta.law.ziran",
+          "begin": "(#)(law)\\b\\s+([A-Za-z_][A-Za-z_0-9]*)\\s+(type|effect|bounds|size|abi|custom|forall|theorem)\\b",
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.definition.directive.ziran"
+            },
+            "2": {
+              "name": "keyword.control.directive.ziran"
+            },
+            "3": {
+              "name": "entity.name.law.ziran"
+            },
+            "4": {
+              "name": "keyword.control.law.ziran"
+            }
+          },
+          "end": ";",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.terminator.law.ziran"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#strings"
+            },
+            {
+              "match": "\\b([A-Za-z_][A-Za-z_0-9]*)\\s*(:)(?!=|:)",
+              "captures": {
+                "1": {
+                  "name": "variable.parameter.law.ziran"
+                },
+                "2": {
+                  "name": "punctuation.separator.domain.ziran"
+                }
+              }
+            },
+            {
+              "name": "keyword.operator.law.ziran",
+              "match": "=>|\\.\\."
+            },
+            {
+              "include": "#declarations"
+            },
+            {
+              "include": "#types"
+            },
+            {
+              "include": "#numbers"
+            },
+            {
+              "include": "#keywords"
+            },
+            {
+              "include": "#operators"
+            },
+            {
+              "name": "variable.other.property.ziran",
+              "match": "(?<=\\.)[A-Za-z_][A-Za-z_0-9]*"
+            },
+            {
+              "name": "variable.other.ziran",
+              "match": "\\b[A-Za-z_][A-Za-z_0-9]*\\b"
+            }
+          ]
+        }
+      ]
+    },
     "strings": {
       "patterns": [
         {

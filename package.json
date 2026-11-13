@@ -22,7 +22,8 @@
     "onCommand:kryon.preview",
     "onCommand:ziran.run",
     "workspaceContains:kryon.toml",
-    "onCustomEditor:ziran.zirViewer"
+    "onCustomEditor:ziran.zirViewer",
+    "workspaceContains:ziran.toml"
   ],
   "contributes": {
     "customEditors": [
@@ -81,17 +82,37 @@
           "type": "array",
           "default": [
             "c",
-            "go"
+            "go",
+            "wasm",
+            "zx"
           ],
           "items": {
             "type": "string",
             "enum": [
               "c",
-              "go"
+              "go",
+              "wasm",
+              "zx",
+              "native"
+            ],
+            "enumDescriptions": [
+              "Generated C, the assembly the C compiler emits for it, and the executable",
+              "Generated Go, Go's own (Plan 9) assembly, and the executable",
+              "WebAssembly text and the .wasm binary",
+              "The portable .zx bundle's listing, its lowered instructions where supported, and its bytes",
+              "The experimental direct backend: lowered and optimized instructions, disassembly and ELF"
             ]
           },
           "uniqueItems": true,
-          "description": "Targets whose generated code the Run pane shows. The pane's checkboxes update this setting."
+          "description": "Targets the Run pane builds and inspects. Each shows its source, assembly and binary in tabs; the pane's checkboxes update this setting."
+        },
+        "ziran.packagePaths": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "markdownDescription": "Package checkouts for `#import \"NAME/module\"` in files outside a Ziran project, such as `{ \"kryon\": \"../kryon\" }`. Each becomes `--module-path NAME=DIR` for its module roots. Unlisted packages are found as `NAME/` or `ORG/NAME/` beside the file, its parent folders or an open folder."
         },
         "ziran.modulePaths": {
           "type": "array",
@@ -109,7 +130,7 @@
         "ziran.previewProfile": {
           "type": "string",
           "default": "",
-          "description": "Kryon project profile to preview. Empty uses the project's default profile."
+          "description": "Canvas profile for the interactive Kryon preview. Empty selects portable_web, then web, then another canvas profile."
         }
       }
     },
@@ -166,11 +187,19 @@
   },
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "package": "vsce package --no-dependencies"
+    "package": "vsce package",
+    "test:laws": "env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u DBUS_SESSION_BUS_ADDRESS -u SESSION_MANAGER HARMONY_DESKTOP_RECOVERY=0 xvfb-run -a node tests/laws-browser.mjs",
+    "test:preview": "env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u DBUS_SESSION_BUS_ADDRESS -u SESSION_MANAGER HARMONY_DESKTOP_RECOVERY=0 xvfb-run -a node tests/preview-browser.mjs",
+    "test:run": "env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u DBUS_SESSION_BUS_ADDRESS -u SESSION_MANAGER HARMONY_DESKTOP_RECOVERY=0 xvfb-run -a node tests/run-browser.mjs"
   },
   "devDependencies": {
     "@vscode/vsce": "^3.6.0",
+    "playwright-core": "^1.65.0",
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.3.2"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "wabt": "1.0.39"
   }
 }

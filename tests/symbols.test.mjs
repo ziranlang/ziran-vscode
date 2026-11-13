@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { test } from 'node:test';
 
 const require = createRequire(import.meta.url);
-const { apiSymbols, docComment, findSymbol, nameAt } = require('../symbols.cjs');
+const { apiImports, apiSymbols, docComment, findSymbol, nameAt, qualifierBefore } = require('../symbols.cjs');
 
 const api = JSON.stringify({
   schema_version: 1,
@@ -68,4 +68,20 @@ test('the comment above a declaration documents it', () => {
   assert.equal(docComment(lines, 6), 'Area of a rectangle,\nin square units.');
   assert.equal(docComment(lines, 7), '');
   assert.equal(docComment(['// Only the module comment.', 'First :: () {}'], 2), '');
+});
+
+test('named imports map each alias to the module it reads', () => {
+  const text = JSON.stringify({ modules: [
+    { name: 'hello', source: 'hello.zi', imports: [
+      { kind: 'module', name: 'Label', target: 'p59ed40033882ead0_label',
+        resolved_module: 'p59ed40033882ead0_label', line: 1 },
+      { kind: 'function', name: 'putchar', target: 'c' }] },
+    { name: 'p59ed40033882ead0_label', source: 'p59ed40033882ead0_label.zi', imports: [] }] });
+  assert.deepEqual(apiImports(text), [
+    { module: 'hello', alias: 'Label', target: 'p59ed40033882ead0_label', line: 1 }]);
+  assert.deepEqual(apiImports('not json'), []);
+  assert.equal(qualifierBefore('    x := Label.Wi'), 'Label');
+  assert.equal(qualifierBefore('    x := Label.'), 'Label');
+  assert.equal(qualifierBefore('    x := a.b.c'), '');
+  assert.equal(qualifierBefore('    x := Width'), '');
 });

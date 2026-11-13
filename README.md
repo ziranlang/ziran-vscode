@@ -23,10 +23,11 @@ pane beside a `.zi` file. Like the Kryon preview it shows, top to bottom:
 
 - the program's output in a window, with the run time and any build or runtime
   errors below it (a run stops after 10 seconds);
-- **Generated code**: the C and Go that `ziran build`
+- **Generated code**: the C, Go and WebAssembly that `ziran build`
   writes, one tab per target with syntax highlighting and a file picker; the
   checkboxes choose the targets and save them to `ziran.previewTargets`;
-- **Checked .zir (inspected)**: the checked modules, highlighted.
+- **ZIR** beside Go shows highlighted checked modules; **WAT** shows readable
+  WebAssembly text and the binary hex view.
 
 Saving a `.zi` file in the same directory reruns everything; **Run again** does
 it on demand. A file without `main :: ()` still shows its generated code and
@@ -55,29 +56,32 @@ name.
 ## Finding the compiler
 
 Checking, the Run pane, and `.zir` browsing use the `ziran`
-command from `ziran.command` when set. Otherwise they use a Ziran checkout's
+command from `ziran.command` when set. Kryon packages otherwise use the installed
+`~/.local/bin/ziran` wrapper (then `PATH`) so the package toolchain and local
+overrides select the compiler. Other files use a Ziran checkout's
 `build/bin/ziran` found above the file, in a Kryon project's `[paths].ziran`,
 or beside the workspace folder, then `~/.local/bin/ziran`, then `PATH`.
 
 ## Kryon preview
 
-This appears only in Kryon projects. Open a Kryon app folder containing
-`kryon.toml`, then click **Run Kryon** in
-the lower-left status bar. A **Run Kryon Preview** link also appears above
-Ziran source, and **Kryon: Preview** is available in the Command Palette.
-The rendered terminal frame appears in a canvas window
-beside the source. Saving a file under `src/` or changing `kryon.toml` rebuilds
-and reruns the app after a short delay. **Run again** refreshes it on demand.
+Open an example source such as `examples/button/button.zi` in a Kryon app with
+`ziran.toml` (or legacy `kryon.toml`), then click **Run Kryon** in the status
+bar, **Run Kryon Preview** above the source, or **Kryon: Preview** in the Command
+Palette. The nearest app manifest selects the entry; no `app.zi` filename is required.
 
-The preview executes the project's normal `kryon run` command. Its **Generated
-C** and **Checked .zir** sections show the modules from that build; selecting a
-module updates the source or Ziran inspector view. The `.zir` representation is
-the current checked intermediate format. Kryon's old KIR format is no longer
-used. The preview uses the `~/.local/bin/kryon` launcher if present, then
-`kryon` from `PATH`. Set `ziran.kryonCommand` for a custom launcher, and
-`ziran.previewProfile` to select a non-default profile. A sibling Ziran
-checkout is used for `.zir` inspection unless `[paths].ziran` names another.
-The preview's child processes do not inherit the desktop display.
+The preview builds through `build-queue -- kryon build --profile PROFILE` and
+embeds the generated HTML, JavaScript, WebAssembly and packaged assets in an isolated
+interactive frame. It selects
+`portable_web`, then `web`, then another canvas profile. Set `ziran.previewProfile`
+to choose a canvas profile explicitly and `ziran.kryonCommand` to select the launcher.
+The launcher uses the project's package toolchain and local overrides.
+
+Saving sources in the workspace, or changing app manifests, overrides or locks,
+rebuilds the preview. Generated build files are excluded to prevent rebuild loops.
+**Run again** rebuilds on demand. Build errors appear below
+the preview; fixing and saving the source restores it. Generated C and inspected
+`.zir` modules come from `build/generated/PROFILE/`. Preview builds cannot inherit
+the desktop display.
 
 ## Browse checked modules
 
@@ -115,3 +119,32 @@ npm run package
 GitHub Actions uploads a VSIX from every build. Maintainers can use the
 workflow's **Run workflow** button with **Publish GitHub Release** enabled to
 publish the package version as a public release.
+
+## Local preview tests
+
+Selected files inside a Ziran package use `--project` for generated targets,
+checked IR and portable execution. The package CLI supplies module roots,
+dependency exports and local overrides even when the editor opens a parent
+workspace. Standalone files retain their own directory as the module root.
+
+Run `npm test` for the local suite and `npm run test:preview` for a fresh VSCode
+extension host on a private Xvfb display. The latter verifies an interactive test
+page, editor saves, build errors and recovery. For a real app build, set
+`ZIRAN_PREVIEW_PROJECT` to its directory and `ZIRAN_PREVIEW_ENTRY` to its entry
+filename before running `npm run test:preview`. This uses installed VSCode and
+requires `build-queue` and the project toolchain on PATH.
+
+Set `ZIRAN_PREVIEW_FIXTURE=1` for a disposable real Button app using canonical
+Kryon/compiler overrides. That test also compiles saved edits, verifies an actual
+malformed-source error, repairs it, and checks restored interactive pixels.
+Maintained example sources are never edited.
+
+For generated-code Preview on an existing source file, use
+`ZIRAN_PREVIEW_PROJECT=/path/to/package ZIRAN_PREVIEW_ENTRY=relative/file.zi npm run test:run`.
+Set `ZIRAN_PREVIEW_WORKSPACE` to a parent folder to test workspace nesting.
+This mode reads the real source without saving edits and verifies its C, Go
+and checked IR views in a private VSCode window.
+
+Run `npm run test:laws` to verify law token colors in an isolated native VSCode
+window on private Xvfb. Set `ZIRAN_INSTALLED_EXTENSION` to an installed extension
+folder to test that copy. This preserves the running editor and its profile.

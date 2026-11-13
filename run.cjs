@@ -4,31 +4,18 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createHash, randomBytes } = require('node:crypto');
 const { projectRoot, runCommand, safeEnvironment } = require('./preview.cjs');
-const { TARGETS, buildTarget, enabledTargets, modulePaths, ziranCommand } =
-  require('./targets.cjs');
+const { TARGETS, buildTarget, bundleArgs, enabledTargets, importingPrograms, irArgs, mainLine,
+  modulePaths, noMainMessage, packageRoot, ziranCommand } = require('./targets.cjs');
 
 const RUN_TIMEOUT_MS = 10000;
-
-// The line of the file's `main :: (` declaration, or -1.
-function mainLine(source) {
-  const lines = source.split(/\r?\n/);
-  return lines.findIndex((line) => /^main\s*::\s*\(/.test(line));
-}
+// The most one hex view request reads from a binary.
+const HEX_REQUEST_LIMIT = 1024 * 1024;
 
 // `ziran bundle --root . --entry hello:main -o hello.zx hello.zi`, then
 // `ziran run hello.zx`: the file's main on the portable runtime.
-function runSteps(command, file, paths, bundle) {
-  const args = ['bundle', '--root', path.dirname(file)];
-  for (const entry of paths) args.push('--module-path', entry);
-  args.push('--entry', `${path.basename(file, '.zi')}:main`, '-o', bundle, file);
-  return [{ command, args }, { command, args: ['run', bundle] }];
-}
-
-function irArgs(file, paths, output) {
-  const args = ['ir', '--root', path.dirname(file)];
-  for (const entry of paths) args.push('--module-path', entry);
-  args.push('-o', output, file);
-  return args;
+function runSteps(command, file, paths, bundle, project = false) {
+  return [{ command, args: bundleArgs(file, paths, bundle, project) },
+    { command, args: ['run', bundle] }];
 }
 
 function execute(command, args, cwd, timeout) {
@@ -54,6 +41,7 @@ const KEYWORDS = {
   go: 'break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var true false nil',
   rust: 'as break const continue crate else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while',
   py: 'and as assert break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield None True False',
+  wat: 'module type func param result local global memory table export import data elem call return block loop if else end br br_if unreachable drop select',
   zir: 'module function stmt expr global type define import from',
 };
 const TYPES = /^(u?int(8|16|32|64)_t|size_t|String|Slice|u8|u16|u32|u64|usize|i8|i16|i32|i64|isize|f32|f64|s8|s16|s32|s64|float32|float64|string|bool|int8|int16|int32|int64|uint8|uint16|uint32|uint64|float|double|byte|rune|str)$/;
@@ -61,8 +49,9 @@ function escapeHtml(text) {
   return text.replace(/[&<>]/g, (c) => c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;');
 }
 function languageOf(name) {
-  if (/\.zir$/.test(name)) return 'zir';
+  if (/\.(zir|zx)(\.txt)?$|\.lir$/.test(name)) return 'zir';
   if (/\.(cpp|hpp)$/.test(name)) return 'cpp';
+  if (/\.wat$/.test(name)) return 'wat';
   if (/\.go$/.test(name)) return 'go';
   if (/\.rs$/.test(name)) return 'rust';
   if (/\.py$/.test(name)) return 'py';
@@ -137,6 +126,16 @@ function runHtml(nonce) {
   .tab.failed { color: var(--vscode-errorForeground); }
   .file-row { margin-bottom: 8px; }
   .file-row:empty { display: none; }
+  .views:empty { display: none; }
+  .views .tab { font-size: .9em; }
+  .caption { color: var(--vscode-descriptionForeground); font-size: .85em; margin-bottom: 6px; }
+  .caption:empty { display: none; }
+  [hidden] { display: none !important; }
+  .hex-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; color: var(--vscode-descriptionForeground); }
+  .hex-bar input { color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); padding: 3px 6px; width: 14em; }
+  .hex-scroll { position: relative; height: 60vh; overflow: auto; border: 1px solid var(--vscode-panel-border); background: var(--vscode-textCodeBlock-background, transparent); }
+  #hex-spacer { width: 1px; }
+  #hex-rows { position: absolute; left: 0; top: 0; margin: 0; border: 0; padding: 0 10px; line-height: 18px; overflow: visible; background: transparent; }
   .tok-keyword { color: #569cd6; }
   .tok-type { color: #4ec9b0; }
   .tok-function { color: #dcdcaa; }
@@ -157,12 +156,13 @@ function runHtml(nonce) {
 <pre class="problems" id="problems"></pre>
 <details id="code-section" open><summary>Generated code</summary>
 <div class="targets" id="targets"></div>
-<div class="tabs" id="tabs" role="tablist"></div>
+<div class="tabs" id="tabs" role="tablist" aria-label="Target"></div>
+<div class="tabs views" id="views" role="tablist" aria-label="View"></div>
 <div class="file-row" id="file-row"></div>
-<pre id="code"></pre></details>
-<details id="ir-section"><summary>Checked .zir (inspected)</summary>
-<div class="file-row"><select id="ir-files" aria-label="Checked Ziran module"></select></div>
-<pre id="ir"></pre></details>
+<div class="caption" id="caption"></div>
+<pre id="code"></pre>
+<div id="hex" hidden><div class="hex-bar"><span id="hex-title"></span><input id="hex-goto" placeholder="Go to offset (hex)" aria-label="Go to offset"></div>
+<div class="hex-scroll" id="hex-scroll" tabindex="0" role="region" aria-label="Hex view"><div id="hex-spacer"></div><pre id="hex-rows"></pre></div></div></details>
 <script nonce="${nonce}">
 ${HIGHLIGHT_SOURCE}
   const api = acquireVsCodeApi();
@@ -171,13 +171,115 @@ ${HIGHLIGHT_SOURCE}
   let state = null;
   let selected = saved.selected || '';
   const files = saved.files || {};
-  let irFile = saved.irFile || '';
-  const remember = () => api.setState({ selected, files, irFile,
-    codeOpen: byId('code-section').open, irOpen: byId('ir-section').open });
+  const views = saved.views || {};
+  const remember = () => api.setState({ selected, files, views, codeOpen: byId('code-section').open });
   if (saved.codeOpen === false) byId('code-section').open = false;
-  if (saved.irOpen) byId('ir-section').open = true;
-  byId('code-section').addEventListener('toggle', remember);
-  byId('ir-section').addEventListener('toggle', remember);
+  byId('code-section').addEventListener('toggle', () => { remember(); renderHex(); });
+
+  // Hex view: rows are drawn only for the visible window, and the bytes come
+  // from the extension in pages as they scroll into view.
+  const HEX_ROW = 18;
+  const HEX_PAGE = 65536;
+  const HEX_MAX_HEIGHT = 8000000;
+  const hexPages = new Map();
+  let hex = null;
+  const hexRows = () => Math.max(1, Math.ceil(hex.size / 16));
+  const hexScaled = () => hexRows() * HEX_ROW > HEX_MAX_HEIGHT;
+  const hexVisible = () => Math.max(1, Math.ceil(byId('hex-scroll').clientHeight / HEX_ROW));
+  const hexFirst = () => {
+    const box = byId('hex-scroll');
+    if (!hexScaled()) return Math.floor(box.scrollTop / HEX_ROW);
+    const last = Math.max(0, hexRows() - hexVisible());
+    const range = Math.max(1, HEX_MAX_HEIGHT - box.clientHeight);
+    return Math.min(last, Math.round(box.scrollTop / range * last));
+  };
+  const hexByte = (offset) => {
+    const page = Math.floor(offset / HEX_PAGE);
+    const id = hex.key + ':' + page;
+    if (!hexPages.has(id)) {
+      hexPages.set(id, null);
+      api.postMessage({ type: 'bytes', key: hex.key, offset: page * HEX_PAGE, length: HEX_PAGE });
+    }
+    const data = hexPages.get(id);
+    const at = offset - page * HEX_PAGE;
+    return data && at < data.length ? data[at] : -1;
+  };
+  const hexLine = (offset, digits) => {
+    let bytes = '';
+    let text = '';
+    for (let index = 0; index < 16; index++) {
+      if (index === 8) bytes += ' ';
+      if (offset + index >= hex.size) { bytes += '   '; continue; }
+      const value = hexByte(offset + index);
+      bytes += (value < 0 ? '··' : value.toString(16).padStart(2, '0')) + ' ';
+      text += value < 0 ? ' ' : value >= 32 && value < 127 ? String.fromCharCode(value) : '.';
+    }
+    return offset.toString(16).padStart(digits, '0') + '  ' + bytes + ' |' + text + '|';
+  };
+  function renderHex() {
+    if (!hex || byId('hex').hidden) return;
+    const box = byId('hex-scroll');
+    const first = hexFirst();
+    const digits = Math.max(8, Math.max(0, hex.size - 1).toString(16).length);
+    const lines = [];
+    for (let row = first; row < first + hexVisible() + 2 && row * 16 < hex.size; row++) {
+      lines.push(hexLine(row * 16, digits));
+    }
+    const rows = byId('hex-rows');
+    rows.textContent = lines.join('\\n');
+    rows.style.top = (hexScaled() ? box.scrollTop : first * HEX_ROW) + 'px';
+  }
+  const showHex = (file) => {
+    byId('code').hidden = true;
+    byId('hex').hidden = false;
+    if (!hex || hex.key !== file.binary.key) {
+      hex = { key: file.binary.key, size: file.binary.size };
+      byId('hex-title').textContent = file.name + ' · ' + file.binary.size.toLocaleString() + ' bytes';
+      byId('hex-spacer').style.height = Math.min(hexRows() * HEX_ROW, HEX_MAX_HEIGHT) + 'px';
+      byId('hex-scroll').scrollTop = 0;
+    }
+    renderHex();
+  };
+  const hideHex = () => { byId('hex').hidden = true; byId('code').hidden = false; };
+  let hexFrame = 0;
+  const scheduleHex = () => {
+    if (hexFrame) return;
+    hexFrame = requestAnimationFrame(() => { hexFrame = 0; renderHex(); });
+  };
+  byId('hex-scroll').addEventListener('scroll', scheduleHex);
+  window.addEventListener('resize', scheduleHex);
+  byId('hex-goto').addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || !hex) return;
+    const offset = parseInt(event.target.value.trim().replace(/^0x/i, ''), 16);
+    if (!Number.isFinite(offset) || offset < 0) return;
+    const row = Math.min(hexRows() - 1, Math.floor(offset / 16));
+    const box = byId('hex-scroll');
+    const last = Math.max(1, hexRows() - hexVisible());
+    box.scrollTop = hexScaled() ? row / last * (HEX_MAX_HEIGHT - box.clientHeight) : row * HEX_ROW;
+    renderHex();
+  });
+  const decode = (text) => {
+    const raw = atob(text || '');
+    const bytes = new Uint8Array(raw.length);
+    for (let index = 0; index < raw.length; index++) bytes[index] = raw.charCodeAt(index);
+    return bytes;
+  };
+
+  const tab = (label, chosen, failed, select) => {
+    const button = document.createElement('button');
+    button.className = 'tab' + (failed ? ' failed' : '');
+    button.setAttribute('role', 'tab');
+    button.setAttribute('aria-selected', String(chosen));
+    button.textContent = label + (failed ? ' ✕' : '');
+    button.addEventListener('click', select);
+    return button;
+  };
+  const showProblem = (message) => {
+    hideHex();
+    const code = byId('code');
+    code.className = 'problems';
+    code.textContent = message;
+  };
   const renderCode = () => {
     const boxes = byId('targets');
     boxes.replaceChildren();
@@ -194,62 +296,74 @@ ${HIGHLIGHT_SOURCE}
       label.append(box, ' ' + target.label);
       boxes.append(label);
     }
-    const results = state.results;
+    const zir = { id: 'zir', label: 'ZIR', ok: !state.irError, message: state.irError,
+      views: [{ id: 'checked', label: 'Checked', ok: true, caption: '',
+        files: state.irModules.map((module) => ({ name: module.name, text: module.text })) }] };
+    const native = (result) => result.id === 'c' || result.id === 'go';
+    const results = [...state.results.filter(native), zir,
+      ...state.results.filter((result) => !native(result))];
     if (!results.some((result) => result.id === selected)) selected = results[0] ? results[0].id : '';
     const tabs = byId('tabs');
     tabs.replaceChildren();
     for (const result of results) {
-      const tab = document.createElement('button');
-      tab.className = 'tab' + (result.ok ? '' : ' failed');
-      tab.setAttribute('role', 'tab');
-      tab.setAttribute('aria-selected', String(result.id === selected));
-      tab.textContent = state.targets.find((item) => item.id === result.id).label + (result.ok ? '' : ' ✕');
-      tab.addEventListener('click', () => { selected = result.id; remember(); renderCode(); });
-      tabs.append(tab);
+      const target = state.targets.find((item) => item.id === result.id);
+      tabs.append(tab(result.label || (target ? target.label : result.id), result.id === selected, !result.ok,
+        () => { selected = result.id; remember(); renderCode(); }));
     }
     const result = results.find((item) => item.id === selected);
+    const viewTabs = byId('views');
+    viewTabs.replaceChildren();
     const row = byId('file-row');
     row.replaceChildren();
+    byId('caption').textContent = '';
     const code = byId('code');
+    code.className = '';
     if (!result) {
+      hideHex();
       code.textContent = state.enabled.length ? (state.codeRunning ? 'Generating…' : '') : 'Choose at least one target.';
       return;
     }
-    if (result.files.length > 1) {
+    if (!result.ok) { showProblem(result.message); return; }
+    const available = result.views || [];
+    if (!available.some((item) => item.id === views[result.id])) {
+      views[result.id] = available[0] ? available[0].id : '';
+    }
+    if (available.length > 1) {
+      for (const item of available) {
+        viewTabs.append(tab(item.label, item.id === views[result.id], !item.ok,
+          () => { views[result.id] = item.id; remember(); renderCode(); }));
+      }
+    }
+    const current = available.find((item) => item.id === views[result.id]);
+    if (!current) { hideHex(); code.textContent = ''; return; }
+    if (!current.ok) { showProblem(current.message); return; }
+    byId('caption').textContent = current.caption || '';
+    const fileKey = result.id + '/' + current.id;
+    if (current.files.length > 1) {
       const select = document.createElement('select');
       select.setAttribute('aria-label', 'Generated file');
-      for (const file of result.files) {
+      for (const file of current.files) {
         const option = document.createElement('option');
         option.value = option.textContent = file.name;
         select.append(option);
       }
-      select.addEventListener('change', () => { files[result.id] = select.value; remember(); renderCode(); });
+      select.addEventListener('change', () => { files[fileKey] = select.value; remember(); renderCode(); });
       row.append(select);
     }
-    const chosen = result.files.find((file) => file.name === files[result.id]) || result.files[0];
+    const chosen = current.files.find((file) => file.name === files[fileKey]) || current.files[0];
     if (row.firstChild && chosen) row.firstChild.value = chosen.name;
-    if (!result.ok) { code.className = 'problems'; code.textContent = result.message; return; }
-    code.className = '';
-    code.innerHTML = chosen ? highlight(chosen.text, languageOf(chosen.name)) : '';
+    if (!chosen) { hideHex(); code.textContent = 'No files.'; return; }
+    if (chosen.binary) { showHex(chosen); return; }
+    hideHex();
+    code.innerHTML = chosen.text.length > 400000 ? escapeHtml(chosen.text) :
+      highlight(chosen.text, languageOf(chosen.name));
   };
-  const renderIr = () => {
-    const select = byId('ir-files');
-    select.replaceChildren();
-    for (const module of state.irModules) {
-      const option = document.createElement('option');
-      option.value = option.textContent = module.name;
-      select.append(option);
-    }
-    const chosen = state.irModules.find((module) => module.name === irFile) || state.irModules[0];
-    select.disabled = state.irModules.length < 2;
-    const ir = byId('ir');
-    if (state.irError) { ir.className = 'problems'; ir.textContent = state.irError; return; }
-    ir.className = '';
-    if (chosen) { select.value = chosen.name; ir.innerHTML = highlight(chosen.text, 'zir'); }
-    else ir.textContent = state.codeRunning ? 'Checking…' : '';
-  };
-  byId('ir-files').addEventListener('change', (event) => { irFile = event.target.value; remember(); renderIr(); });
   window.addEventListener('message', ({ data }) => {
+    if (data.type === 'bytes') {
+      hexPages.set(data.key + ':' + Math.floor(data.offset / HEX_PAGE), decode(data.data));
+      if (hex && hex.key === data.key) renderHex();
+      return;
+    }
     if (data.type !== 'state') return;
     state = data;
     byId('window-title').textContent = state.title;
@@ -257,11 +371,10 @@ ${HIGHLIGHT_SOURCE}
     byId('status').className = state.failed ? 'failed' : '';
     byId('time').textContent = state.time;
     const screen = byId('screen');
-    screen.textContent = state.output || (state.running ? '' : state.hasMain ? 'No output.' : 'No main :: () procedure; nothing to run.');
+    screen.textContent = state.output || (state.running ? '' : state.hasMain ? 'No output.' : state.noMain);
     screen.className = state.output ? '' : 'empty';
     byId('problems').textContent = state.problems;
     renderCode();
-    renderIr();
   });
   byId('run').addEventListener('click', () => api.postMessage({ type: 'run' }));
   api.postMessage({ type: 'ready' });
@@ -283,8 +396,10 @@ class RunPreview {
     this.workDirectory = workDirectoryFor(file);
     this.state = { type: 'state', title: path.basename(file), status: 'Starting…',
       output: '', problems: '', time: '', failed: false, running: true, hasMain: true,
-      targets: TARGETS, enabled: enabledTargets(file, vscode), results: [],
+      noMain: '', targets: TARGETS, enabled: enabledTargets(file, vscode), results: [],
       irModules: [], irError: '', codeRunning: true };
+    this.generation = 0;
+    this.binaries = new Map();
     this.panel = vscode.window.createWebviewPanel('ziranRun',
       `Run: ${path.basename(file)}`, vscode.ViewColumn.Beside,
       { enableScripts: true, retainContextWhenHidden: true });
@@ -342,6 +457,7 @@ class RunPreview {
   async message(message) {
     if (message.type === 'ready') this.post();
     if (message.type === 'run') this.schedule();
+    if (message.type === 'bytes') await this.sendBytes(message);
     if (message.type === 'targets' && Array.isArray(message.enabled)) {
       const enabled = TARGETS.map((target) => target.id)
         .filter((id) => message.enabled.includes(id));
@@ -356,19 +472,55 @@ class RunPreview {
     }
   }
 
+  // One page of a binary the hex view shows, read only from files this
+  // run's results listed.
+  async sendBytes(message) {
+    const file = this.binaries.get(message.key);
+    const offset = Number(message.offset);
+    if (!file || !Number.isSafeInteger(offset) || offset < 0) return;
+    const length = Math.min(Math.max(0, Number(message.length) || 0), HEX_REQUEST_LIMIT);
+    let data = '';
+    try {
+      const handle = await fs.open(file, 'r');
+      try {
+        const buffer = Buffer.alloc(length);
+        const { bytesRead } = await handle.read(buffer, 0, length, offset);
+        data = buffer.subarray(0, bytesRead).toString('base64');
+      } finally { await handle.close(); }
+    } catch {}
+    if (!this.disposed) this.panel.webview.postMessage({ type: 'bytes', key: message.key, offset, data });
+  }
+
+  // Binaries stay on disk; the webview receives a key and size and asks for
+  // pages of bytes by key.
+  register(results) {
+    this.generation++;
+    this.binaries = new Map();
+    for (const result of results) {
+      for (const item of result.views || []) {
+        for (const file of item.files || []) {
+          if (!file.binary?.path) continue;
+          const key = `${this.generation}:${result.id}:${item.id}:${file.name}`;
+          this.binaries.set(key, file.binary.path);
+          file.binary = { key, size: file.binary.size };
+        }
+      }
+    }
+    return results;
+  }
+
   async runProgram(command, paths) {
-    let source = '';
-    try { source = await fs.readFile(this.file, 'utf8'); } catch {}
-    this.state.hasMain = mainLine(source) >= 0;
     if (!this.state.hasMain) {
       Object.assign(this.state, { output: '', problems: '', time: '', failed: false,
-        status: 'Up to date · no main to run' });
+        status: 'No main to run' });
       return;
     }
     const bundle = path.join(this.workDirectory, 'program.zx');
-    const [bundleStep, runStep] = runSteps(command, this.file, paths, bundle);
+    const project = await packageRoot(this.file);
+    const cwd = project || path.dirname(this.file);
+    const [bundleStep, runStep] = runSteps(command, this.file, paths, bundle, Boolean(project));
     const started = Date.now();
-    const built = await execute(bundleStep.command, bundleStep.args, path.dirname(this.file),
+    const built = await execute(bundleStep.command, bundleStep.args, cwd,
       RUN_TIMEOUT_MS);
     if (built.code !== 0) {
       Object.assign(this.state, { output: '', time: '', failed: true,
@@ -377,7 +529,7 @@ class RunPreview {
         status: 'Build failed' });
       return;
     }
-    const ran = await execute(runStep.command, runStep.args, path.dirname(this.file),
+    const ran = await execute(runStep.command, runStep.args, cwd,
       RUN_TIMEOUT_MS);
     const failed = ran.code !== 0 || ran.timedOut;
     Object.assign(this.state, {
@@ -393,7 +545,9 @@ class RunPreview {
   async inspectIr(command, paths) {
     const output = path.join(this.workDirectory, 'ir');
     await fs.rm(output, { recursive: true, force: true });
-    const saved = await runCommand(command, irArgs(this.file, paths, output), path.dirname(this.file));
+    const project = await packageRoot(this.file);
+    const saved = await runCommand(command, irArgs(this.file, paths, output, Boolean(project)),
+      project || path.dirname(this.file));
     if (saved.code !== 0) {
       this.state.irModules = [];
       this.state.irError = (saved.stderr || saved.stdout).trim() || `ziran ir exited with ${saved.code}`;
@@ -424,17 +578,24 @@ class RunPreview {
       const command = await ziranCommand(this.file, this.vscode);
       const paths = await modulePaths(this.file, command, this.vscode);
       await fs.mkdir(this.workDirectory, { recursive: true });
+      let source = '';
+      try { source = await fs.readFile(this.file, 'utf8'); } catch {}
+      const hasMain = mainLine(source) >= 0;
+      const noMain = hasMain ? '' : noMainMessage(this.file, await importingPrograms(this.file));
+      Object.assign(this.state, { hasMain, noMain });
+      const folders = (this.vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath);
       const program = this.runProgram(command, paths).then(() => {
         this.state.running = false;
         this.post();
       });
       const [results] = await Promise.all([
         Promise.all(this.state.enabled.map((target) =>
-          buildTarget(command, target, this.file, path.join(this.workDirectory, 'targets'), paths))),
+          buildTarget(command, target, this.file, path.join(this.workDirectory, 'targets'), paths,
+            { hasMain, noMain, folders }))),
         this.inspectIr(command, paths),
         program,
       ]);
-      this.state.results = results;
+      this.state.results = this.register(results);
     } catch (error) {
       Object.assign(this.state, { status: 'Run failed', problems: error.message, failed: true });
     } finally {
