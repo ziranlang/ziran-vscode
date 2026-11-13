@@ -72,9 +72,9 @@ try {
     const native = run.locator('#tabs').getByRole('tab', { name: 'Native', exact: true });
     await native.click({ timeout: 180000 });
     assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(),
-      ['Source', 'Checked ZIR', 'LIR', 'Optimized', 'ZX', 'Assembly', 'ELF']);
+      ['Source', 'ZIR', 'LIR', 'Optimized', 'ZX', 'Assembly', 'Binary']);
     const view = name => run.locator('#views').getByRole('tab', { name, exact: true });
-    await view('Checked ZIR').click();
+    await view('ZIR').click();
     assert.match(await run.locator('#code').textContent(), /function main/);
     await view('LIR').click();
     assert.match(await run.locator('#code').textContent(), /^lir \d+ entry/);
@@ -82,7 +82,7 @@ try {
     await run.waitForFunction(() => document.querySelector('#hex-title').textContent.startsWith('portable.zx'));
     await view('Assembly').click();
     assert.match(await run.locator('#code').textContent(), /<hello:main>:[\s\S]*syscall/);
-    await view('ELF').click();
+    await view('Binary').click();
     await run.waitForFunction(() => /hello:main at 0x[0-9a-f]+ \(\.text\)/
       .test(document.querySelector('#hex-code').textContent));
     assert.equal(await run.locator('#hex-headers').isChecked(), false);
@@ -91,7 +91,7 @@ try {
       .test(document.querySelector('#hex-rows').textContent));
     assert.equal(await fs.readFile(path.join(runtime, 'activated'), 'utf8'), installed || repo);
     await fs.writeFile(path.join(runtime, 'done'), '');
-    console.log(`Local installed VS Code Native test: ${entry}; source, checked ZIR, LIR, ZX, syscall assembly and main-first ELF/header views passed.`);
+    console.log(`Local installed VS Code Native test: ${entry}; source, ZIR, LIR, ZX, syscall assembly and main-first Binary/ELF header views passed.`);
   } else if (real) {
     await run.waitForFunction(() => document.querySelector('[role=tab]'), null, {timeout:180000});
     for (const tab of ['C', 'Go', 'ZIR']) {
@@ -170,11 +170,11 @@ try {
     await firstRow(/^00000000  00 61 73 6d /);
     await tab('Native').click();
     assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(),
-      ['Source', 'Checked ZIR', 'LIR', 'Optimized', 'ZX', 'Assembly', 'ELF']);
+      ['Source', 'ZIR', 'LIR', 'Optimized', 'ZX', 'Assembly', 'Binary']);
     assert.match(await code(), /Hello, World!/);
     await view('LIR').click();
     assert.match(await code(), /^lir \d+ entry/);
-    await view('ELF').click();
+    await view('Binary').click();
     await run.waitForFunction(() => /hello:main at 0x[0-9a-f]+ \(\.text\)/
       .test(document.querySelector('#hex-code').textContent));
     await run.locator('#hex-headers').check();

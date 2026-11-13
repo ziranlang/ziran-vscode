@@ -29,7 +29,7 @@
     "customEditors": [
       {
         "viewType": "ziran.zirViewer",
-        "displayName": "Ziran Checked Module",
+        "displayName": "Ziran ZIR Module",
         "selector": [
           {
             "filenamePattern": "*.zir"
@@ -100,7 +100,7 @@
               "Generated Go, Go's own (Plan 9) assembly, and the executable",
               "WebAssembly text and the .wasm binary",
               "Legacy setting alias for Native; ZX is now a stage within Native, not a separate target",
-              "Direct native pipeline: source, checked ZIR, LIR, optimized ZX, target assembly and ELF"
+              "Direct native pipeline: source, ZIR, LIR, optimized ZX, target assembly and the ELF binary"
             ]
           },
           "uniqueItems": true,
@@ -153,7 +153,7 @@
       {
         "id": "ziran-module",
         "aliases": [
-          "Ziran Checked Module"
+          "Ziran ZIR Module"
         ],
         "extensions": [
           ".zir"

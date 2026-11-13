@@ -35,11 +35,12 @@ it on demand. A file without `main :: ()` still shows its generated code and
 with `ziran run` on the portable runtime. In Kryon projects ▶ runs the Kryon
 preview instead.
 
-Select **Native** to inspect the direct pipeline: source → checked ZIR → LIR →
-linked portable ZX instructions → target assembly → ELF. The Optimized view
+Select **Native** to inspect the direct pipeline: source → ZIR → LIR →
+linked portable ZX instructions → target assembly → binary (the ELF lowered
+from ZX). The Optimized view
 shows the verified instructions read back from ZX and the source optimization
 report. Assembly is an `objdump` of the final ELF, not generated C or Go. The
-ELF hex view starts at `main`; its header toggle still reveals the whole file.
+Binary view's hex starts at `main`; its ELF header toggle still reveals the whole file.
 C and Go also produce binaries, but are separate generated-code routes.
 There is one Native checkbox: ZX is a portable instruction stage within it, not
 a second target. Native is enabled by default; an older `previewTargets` entry
@@ -161,7 +162,7 @@ For generated-code Preview on an existing source file, use
 `ZIRAN_PREVIEW_PROJECT=/path/to/package ZIRAN_PREVIEW_ENTRY=relative/file.zi npm run test:run`.
 Set `ZIRAN_PREVIEW_WORKSPACE` to a parent folder to test workspace nesting.
 This mode reads the real source without saving edits and verifies its C, Go
-and checked IR views in a private VSCode window.
+and ZIR views in a private VSCode window.
 
 Add `ZIRAN_RUN_NATIVE=1` to inspect the existing `examples/hello.zi` through every
 Native stage instead. For example, set `ZIRAN_PREVIEW_PROJECT` to the canonical

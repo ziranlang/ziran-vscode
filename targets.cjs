@@ -547,7 +547,7 @@ async function buildWasm(context) {
   ] };
 }
 
-// Checked .zir for the program's main, for the direct backend.
+// The program's .zir for main, for the direct backend.
 async function checkedProgram(context, directory) {
   const { command, file, paths, project, cwd } = context;
   const entry = `${moduleName(file)}:main`;
@@ -583,7 +583,7 @@ async function buildNative(context) {
       const listing = at(`${name}.txt`);
       const inspected = await runToFile(command, ['inspect', path.join(path.dirname(input), name)],
         context.cwd, listing);
-      if (inspected.code !== 0) throw new Error(`checked ZIR listing: ${problem(inspected, 'ziran inspect')}`);
+      if (inspected.code !== 0) throw new Error(`ZIR listing: ${problem(inspected, 'ziran inspect')}`);
       checkedFiles.push({ name, text: await readText(listing) });
     }
     const checked = ['--root', path.dirname(input), '--entry', entry];
@@ -612,7 +612,7 @@ async function buildNative(context) {
       `# command: objdump -d final.elf\n\n` + await readText(body);
     return { ok: true, message: '', views: [
       view('source', 'Source', [{ name: path.basename(file), text: await readText(file) }]),
-      view('checked', 'Checked ZIR', checkedFiles),
+      view('checked', 'ZIR', checkedFiles),
       view('lowered', 'LIR', [{ name: 'lowered.lir', text: await readText(at('lowered.lir')) }]),
       view('optimized', 'Optimized', [
         { name: 'optimized.lir', text: await readText(at('optimized.lir')) },
@@ -622,8 +622,8 @@ async function buildNative(context) {
         'Linked portable revision-28 instructions, used directly for target lowering'),
       view('disassembly', 'Assembly', [{ name: 'final.disasm', text: disassembly }],
         'objdump of the ELF lowered directly from verified ZX; no generated C or Go'),
-      view('binary', 'ELF', [await binaryFile(at('final.elf'))],
-        'Direct native platform binary; host services use target-owned bindings'),
+      view('binary', 'Binary', [await binaryFile(at('final.elf'))],
+        'The ELF lowered directly from verified ZX; host services use target-owned bindings'),
     ] };
   } catch (error) {
     return { ok: false, message: `Native inspection failed during ${error.message}`, views: [] };

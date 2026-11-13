@@ -150,7 +150,7 @@ function previewHtml(nonce) {
 <div class="window" id="window"><div class="window-bar"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><span id="window-title"></span></div><iframe id="app" title="Interactive Kryon preview" sandbox="allow-scripts allow-pointer-lock"></iframe></div>
 <pre id="build-output"></pre>
 <details><summary>Generated C</summary><select id="c-files" aria-label="Generated C module"></select><pre id="c-source"></pre></details>
-<details><summary>Checked .zir (inspected)</summary><select id="ir-files" aria-label="Checked Ziran module"></select><pre id="ir-source"></pre></details>
+<details><summary>ZIR (inspected)</summary><select id="ir-files" aria-label="ZIR module"></select><pre id="ir-source"></pre></details>
 <script nonce="${nonce}">
   const api = acquireVsCodeApi();
   const byId = (id) => document.getElementById(id);
