@@ -1,5 +1,4 @@
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createHash, randomBytes } = require('node:crypto');
@@ -104,7 +103,7 @@ function elfCodeStart(input) {
         }
       }
 
-      let goMain = null;
+      let qualifiedMain = null;
       const symbolTables = sections.filter((section) => section.type === 2 || section.type === 11)
         .sort((left, right) => left.type - right.type);
       for (const table of symbolTables) {
@@ -123,7 +122,7 @@ function elfCodeStart(input) {
           if ((info & 0x0f) !== 2 || sectionIndex <= 0 || sectionIndex >= sections.length) continue;
           const name = cString(names.offset, names.size, nameOffset);
           if (name === null) return null;
-          if (name !== 'main' && name !== 'main.main') continue;
+          if (name !== 'main' && name !== 'main.main' && !name.endsWith(':main')) continue;
           const target = sections[sectionIndex];
           const delta = type === 1 ? value : value - target.address;
           const offset = target.offset + delta;
@@ -132,10 +131,10 @@ function elfCodeStart(input) {
           const found = { offset, label: `${name} at 0x${offset.toString(16)} (${target.name || 'code'})`,
             toggleLabel: 'Show ELF headers' };
           if (name === 'main') return found;
-          if (!goMain) goMain = found;
+          if (!qualifiedMain) qualifiedMain = found;
         }
       }
-      if (goMain) return goMain;
+      if (qualifiedMain) return qualifiedMain;
 
       const text = sections.filter((section) => section.name === '.text' && (section.flags & 4) &&
         section.size > 0 && fits(section.offset, section.size))
@@ -667,8 +666,8 @@ ${HEX_VIEW_SOURCE}
 </script></body></html>`;
 }
 
-function workDirectoryFor(file) {
-  return path.join(os.tmpdir(), 'ziran-run-' +
+function workDirectoryFor(file, buildRoot) {
+  return path.join(buildRoot,
     createHash('sha256').update(file).digest('hex').slice(0, 16));
 }
 
@@ -679,7 +678,9 @@ class RunPreview {
     this.disposed = false;
     this.running = false;
     this.rerun = false;
-    this.workDirectory = workDirectoryFor(file);
+    this.buildRoot = path.join(context.globalStorageUri.fsPath, 'run',
+      `${process.pid}-${randomBytes(6).toString('hex')}`);
+    this.workDirectory = workDirectoryFor(file, this.buildRoot);
     this.state = { type: 'state', title: path.basename(file), status: 'Starting…',
       output: '', problems: '', time: '', failed: false, running: true, hasMain: true,
       noMain: '', targets: TARGETS, enabled: enabledTargets(file, vscode), results: [],
@@ -714,7 +715,7 @@ class RunPreview {
     if (this.disposed || file === this.file) return;
     fs.rm(this.workDirectory, { recursive: true, force: true }).catch(() => {});
     this.file = file;
-    this.workDirectory = workDirectoryFor(file);
+    this.workDirectory = workDirectoryFor(file, this.buildRoot);
     this.panel.title = `Run: ${path.basename(file)}`;
     Object.assign(this.state, { title: path.basename(file), status: 'Starting…',
       output: '', problems: '', time: '', failed: false, running: true,
@@ -729,7 +730,7 @@ class RunPreview {
     this.disposed = true;
     clearTimeout(this.timer);
     for (const disposable of this.disposables) disposable.dispose();
-    fs.rm(this.workDirectory, { recursive: true, force: true }).catch(() => {});
+    fs.rm(this.buildRoot, { recursive: true, force: true }).catch(() => {});
   }
 
   post() { if (!this.disposed) this.panel.webview.postMessage(this.state); }
@@ -892,6 +893,7 @@ class RunPreview {
       this.running = false;
       Object.assign(this.state, { running: false, codeRunning: false });
       this.post();
+      if (this.disposed) await fs.rm(this.buildRoot, { recursive: true, force: true }).catch(() => {});
       if (this.rerun && !this.disposed) { this.rerun = false; this.schedule(); }
     }
   }
@@ -938,4 +940,4 @@ function activateRun(context, vscode) {
 }
 
 module.exports = { HEX_VIEW_SOURCE, HIGHLIGHT_SOURCE, activateRun, binaryContentStart,
-  elfCodeStart, execute, irArgs, mainLine, runHtml, runSteps, wasmCodeStart, zxInstructionStart };
+  elfCodeStart, execute, irArgs, mainLine, runHtml, runSteps, wasmCodeStart, workDirectoryFor, zxInstructionStart };

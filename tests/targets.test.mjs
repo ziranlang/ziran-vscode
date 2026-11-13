@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 const require = createRequire(import.meta.url);
-const { TARGETS, assemblyArguments, buildArgs, buildTarget, commandStd, importingPrograms,
+const { DEFAULT_TARGETS, TARGETS, assemblyArguments, buildArgs, buildTarget, commandStd, enabledTargets, importingPrograms,
   noMainMessage, ziranCommand } = require('../targets.cjs');
 const compiler = path.resolve('../ziran/build/bin/ziran');
 const view = (result, id) => {
@@ -15,7 +15,15 @@ const view = (result, id) => {
 };
 const magic = async file => [...(await fs.readFile(file.binary.path)).subarray(0, 4)];
 test('target arguments, command discovery and no-main guidance cover every target', async () => {
-  assert.deepEqual(TARGETS.map(target => target.id), ['c', 'go', 'wasm', 'zx', 'native']);
+  assert.deepEqual(TARGETS.map(target => target.id), ['c', 'go', 'wasm', 'native']);
+  assert.deepEqual(DEFAULT_TARGETS, ['c', 'go', 'wasm', 'native']);
+  for (const [configured, expected] of [
+    [undefined, DEFAULT_TARGETS], [['zx'], ['native']], [['native', 'zx', 'c'], ['c', 'native']], [[], []],
+  ]) {
+    const vscode = { Uri: { file: fsPath => ({ fsPath }) }, workspace: {
+      getConfiguration: () => ({ get: (_, fallback) => configured ?? fallback }) } };
+    assert.deepEqual(enabledTargets('/notes/hello.zi', vscode), expected);
+  }
   for (const [actual, expected] of [
     [buildArgs('go', '/notes/hello.zi', '/tmp/out/go', ['/ziran/std']),
       ['build', '--target=go', '--root', '/notes', '--module-path', '/ziran/std', '-o', '/tmp/out/go', '/notes/hello.zi']],
@@ -85,7 +93,7 @@ test('real package builds expose each target, portable execution, IR and module 
     await fs.writeFile(source, '#import "message"\nmain :: () { print(Message); }\n');
     const lock = await runCommand(compiler, ['lock'], directory); assert.equal(lock.code, 0, lock.stderr);
     const work = path.join(directory, 'generated'); const results = {};
-    for (const target of ['c', 'go', 'wasm', 'zx']) {
+    for (const target of ['c', 'go', 'wasm']) {
       results[target] = await buildTarget(compiler, target, source, work, []);
       assert.equal(results[target].ok, true, `${target}: ${results[target].message}`);
     }
@@ -97,9 +105,29 @@ test('real package builds expose each target, portable execution, IR and module 
     assert.deepEqual(await magic(view(results.go, 'binary').files[0]), [0x7f, 0x45, 0x4c, 0x46]);
     assert.match(view(results.wasm, 'text').files[0].text, /\(module/);
     assert.deepEqual(await magic(view(results.wasm, 'binary').files[0]), [0, 0x61, 0x73, 0x6d]);
-    assert.match(view(results.zx, 'listing').files[0].text, /bundle entry hello:main/);
-    assert.ok(view(results.zx, 'binary').files[0].binary.size > 0);
-    assert.match(results.zx.views.find(item => item.id === 'instructions').message, /zi2asm/);
+    if (existsSync(path.resolve('../ziran/build/bin/zi2asm'))) {
+      const native = await buildTarget(compiler, 'native', source, work, []);
+      assert.equal(native.ok, true, native.message);
+      assert.deepEqual(native.views.map(item => item.id),
+        ['source', 'checked', 'lowered', 'optimized', 'zx', 'disassembly', 'binary']);
+      assert.match(view(native, 'source').files[0].text, /print\(Message\)/);
+      assert.ok(view(native, 'checked').files.some(file => file.name === 'hello.zir'));
+      const binary = view(native, 'binary').files[0];
+      assert.deepEqual(await magic(binary), [0x7f, 0x45, 0x4c, 0x46]);
+      const { binaryContentStart } = require('../run.cjs');
+      assert.match(binaryContentStart(await fs.readFile(binary.binary.path)).label, /^hello:main at /);
+      assert.equal(view(native, 'zx').files[0].name, 'portable.zx');
+      const headers = await runCommand('readelf', ['-lW', binary.binary.path], directory);
+      assert.equal(headers.code, 0, headers.stderr);
+      assert.doesNotMatch(headers.stdout, /INTERP|DYNAMIC/);
+      const symbols = await runCommand('nm', ['-S', binary.binary.path], directory);
+      assert.equal(symbols.code, 0, symbols.stderr);
+      assert.doesNotMatch(symbols.stdout, /\bU\s/);
+      await fs.chmod(binary.binary.path, 0o755);
+      const ran = await execute(binary.binary.path, [], directory, 10000);
+      assert.equal(ran.code, 0, ran.stderr);
+      assert.equal(ran.stdout, 'Package roots!\n');
+    }
     const ir = await runCommand(compiler, irArgs(source, [], path.join(directory, 'ir'), true), directory);
     assert.equal(ir.code, 0, ir.stderr);
     for (const [index, step] of runSteps(compiler, source, [], path.join(directory, 'hello.zx'), true).entries()) {
@@ -110,14 +138,13 @@ test('real package builds expose each target, portable execution, IR and module 
     if (existsSync(path.resolve('../ziran/build/bin/zi2asm'))) {
       const native = await buildTarget(compiler, 'native', source, work, []);
       assert.match(view(native, 'lowered').files[0].text, /^lir \d+ entry/);
-      assert.match(view(native, 'disassembly').files[0].text, /--adjust-vma=-0x[0-9a-f]+[\s\S]*<.*>:/);
+      assert.match(view(native, 'disassembly').files[0].text, /# command: objdump -d final\.elf[\s\S]*<hello:main>:/);
       assert.deepEqual(await magic(view(native, 'binary').files[0]), [0x7f, 0x45, 0x4c, 0x46]);
-      assert.match(view(await buildTarget(compiler, 'zx', source, work, []), 'instructions').files[0].text, /^lir \d+ entry/);
     }
     await fs.writeFile(source, '#program_export\nFrame :: () -> s32 { return 7 }\n');
     await fs.writeFile(path.join(directory, 'apps/screen/desktop_hello.zi'), '#import "hello"\nmain :: () -> s32 { return Frame() }\n');
     const expected = "hello.zi has no main; it's a module. Run a program that imports it, such as desktop_hello.zi.";
-    for (const target of ['wasm', 'zx', 'native']) assert.equal((await buildTarget(compiler, target, source, work, [])).message, expected);
+    for (const target of ['wasm', 'native']) assert.equal((await buildTarget(compiler, target, source, work, [])).message, expected);
     for (const target of ['c', 'go']) {
       const result = await buildTarget(compiler, target, source, work, []);
       assert.match(view(result, 'source').files[0].text, /Frame/);

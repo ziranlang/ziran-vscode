@@ -2,8 +2,10 @@
 
 ## Unreleased
 
+- Inspect Native through checked ZIR, LIR and linked portable ZX before direct ELF lowering. Show each stage, use the current ZX CLI, recognize qualified Ziran main symbols, and retain main-first binary navigation. Keep temporary builds in extension-owned storage and verify no-libc console output with the real package toolchain.
+- Merge the separate ZX and Native inspection options into Native, enabled by default. Existing `zx` target settings select Native; portable ZX bytes remain a stage within its single direct-lowering pipeline.
 - Start binary inspection at `main` or the principal ELF, WebAssembly or ZX instruction region while retaining real file offsets, with a full-file toggle and offset navigation for hidden headers.
-- Inspect every target in the Run pane: generated C with the C compiler's assembly and the binary, generated Go with `-gcflags=-S` portable assembly and the binary, the `.zx` instruction listing and bytes, and the native backend's lowered listings and disassembly; binaries open in a paged hexadecimal view.
+- Inspect every target in the Run pane: generated C with the C compiler's assembly and the binary, generated Go with `-gcflags=-S` portable assembly and the binary, WebAssembly, and the native backend's ZX instructions and disassembly; binaries open in a paged hexadecimal view.
 - Explain that a file without `main` is a module to run from a program that imports it, instead of failing with a missing bundle entry.
 - Resolve `kryon/<package>` imports and `Alias :: #import "…"` lines through the project import map.
 

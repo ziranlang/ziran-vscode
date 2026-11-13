@@ -84,7 +84,7 @@
             "c",
             "go",
             "wasm",
-            "zx"
+            "native"
           ],
           "items": {
             "type": "string",
@@ -99,8 +99,8 @@
               "Generated C, the assembly the C compiler emits for it, and the executable",
               "Generated Go, Go's own (Plan 9) assembly, and the executable",
               "WebAssembly text and the .wasm binary",
-              "The portable .zx bundle's listing, its lowered instructions where supported, and its bytes",
-              "The experimental direct backend: lowered and optimized instructions, disassembly and ELF"
+              "Legacy setting alias for Native; ZX is now a stage within Native, not a separate target",
+              "Direct native pipeline: source, checked ZIR, LIR, optimized ZX, target assembly and ELF"
             ]
           },
           "uniqueItems": true,

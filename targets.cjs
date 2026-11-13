@@ -10,10 +10,9 @@ const TARGETS = [
   { id: 'c', label: 'C' },
   { id: 'go', label: 'Go' },
   { id: 'wasm', label: 'Wasm' },
-  { id: 'zx', label: 'ZX' },
   { id: 'native', label: 'Native' },
 ];
-const DEFAULT_TARGETS = ['c', 'go', 'wasm', 'zx'];
+const DEFAULT_TARGETS = ['c', 'go', 'wasm', 'native'];
 // Listings larger than this are cut; the hex view pages binaries instead.
 const VIEW_TEXT_LIMIT = 4 * 1024 * 1024;
 
@@ -242,7 +241,8 @@ async function modulePaths(file, command, vscode) {
 function enabledTargets(file, vscode) {
   const configured = vscode.workspace.getConfiguration('ziran', vscode.Uri.file(file))
     .get('previewTargets', DEFAULT_TARGETS);
-  return TARGETS.map((target) => target.id).filter((id) => configured.includes(id));
+  const selected = configured.map(id => id === 'zx' ? 'native' : id);
+  return TARGETS.map((target) => target.id).filter((id) => selected.includes(id));
 }
 
 function moduleName(file) {
@@ -564,55 +564,8 @@ async function zi2asmStep(zi2asm, stage, args, cwd) {
   if (result.code !== 0) throw new Error(`${stage}: ${problem(result, 'zi2asm')}`);
 }
 
-async function buildZx(context) {
-  const { command, file, output, paths, project, cwd, hasMain, noMain } = context;
-  if (!hasMain) return { ok: false, message: noMain, views: [] };
-  const name = moduleName(file);
-  const bundle = path.join(output, `${name}.zx`);
-  const built = await runCommand(command, bundleArgs(file, paths, bundle, project), cwd);
-  if (built.code !== 0) return { ok: false, message: problem(built, 'ziran bundle'), views: [] };
-  const listing = path.join(output, `${name}.zx.txt`);
-  let inspected = await runToFile(command, ['inspect', bundle], cwd, listing);
-  // `inspect` is not a project command, so a project-aware launcher can
-  // reach an installed Ziran older than the pinned toolchain that bundled it.
-  const inspector = inspected.code === 0 ? null : await ziranTool(command, 'zi-inspect', file, context.folders);
-  if (inspector) inspected = await runToFile(inspector, [bundle], cwd, listing);
-  const views = [inspected.code === 0 ?
-    view('listing', 'Listing', [{ name: `${name}.zx.txt`, text: await readText(listing) }],
-      'ziran inspect: entry, linked modules and checked code') :
-    failedView('listing', 'Listing', problem(inspected, 'ziran inspect'))];
-  views.push(await zxInstructions(context));
-  views.push(view('binary', 'Binary', [await binaryFile(bundle)]));
-  return { ok: true, message: '', views };
-}
-
-// Lowered instructions of the executable ZX container (revision 28) when the
-// experimental direct backend supports the program.
-async function zxInstructions(context) {
-  const { command, file, output } = context;
-  const zi2asm = await ziranTool(command, 'zi2asm', file, context.folders);
-  const unsupported = 'The installed .zx carries checked .zir (see Listing). Lowered instructions come from ' +
-    'the experimental revision-28 container written by zi2asm';
-  if (!zi2asm) return failedView('instructions', 'Instructions', `${unsupported}, which was not found.`);
-  try {
-    const { entry, input } = await checkedProgram(context, path.join(output, 'checked'));
-    const container = path.join(output, `${moduleName(file)}.r28.zx`);
-    const listing = path.join(output, `${moduleName(file)}.zx.lir`);
-    await zi2asmStep(zi2asm, 'executable ZX', ['--root', path.dirname(input), '--entry', entry,
-      '--emit', 'zx', '-o', container, input], output);
-    await zi2asmStep(zi2asm, 'instruction listing', ['--input', 'zx', '--emit', 'lir', '-o', listing,
-      container], output);
-    return view('instructions', 'Instructions', [
-      { name: path.basename(listing), text: await readText(listing) },
-      await binaryFile(container),
-    ], 'zi2asm --input zx --emit lir: revision-28 executable container');
-  } catch (error) {
-    return failedView('instructions', 'Instructions', `${unsupported}; it does not support this program.\n${error.message}`);
-  }
-}
-
 // Ziran's direct-assembly inspection pipeline (ASSEMBLY/vscode-inspection.md):
-// checked .zir -> lowered/optimized listings -> final ELF and map -> objdump.
+// source -> checked .zir -> LIR -> linked portable ZX -> direct ELF -> objdump.
 async function buildNative(context) {
   const { command, file, output, hasMain, noMain } = context;
   if (!hasMain) return { ok: false, message: noMain, views: [] };
@@ -623,35 +576,54 @@ async function buildNative(context) {
   try {
     const { entry, input } = await checkedProgram(context, path.join(output, 'checked'));
     const at = (name) => path.join(output, name);
-    const lirb = at('lowered.lirb');
-    await zi2asmStep(zi2asm, 'lowered instruction binary', ['--root', path.dirname(input), '--entry', entry,
-      '--emit', 'exec', '-o', lirb, input], output);
+    const checkedFiles = [];
+    const names = (await listFiles(path.dirname(input))).filter(name => name.endsWith('.zir'));
+    names.sort((left, right) => (right === path.basename(input)) - (left === path.basename(input)));
+    for (const name of names) {
+      const listing = at(`${name}.txt`);
+      const inspected = await runToFile(command, ['inspect', path.join(path.dirname(input), name)],
+        context.cwd, listing);
+      if (inspected.code !== 0) throw new Error(`checked ZIR listing: ${problem(inspected, 'ziran inspect')}`);
+      checkedFiles.push({ name, text: await readText(listing) });
+    }
+    const checked = ['--root', path.dirname(input), '--entry', entry];
+    const zx = at('portable.zx');
+    await zi2asmStep(zi2asm, 'lowered instruction listing', [...checked,
+      '--emit', 'lir', '-o', at('lowered.lir'), input], output);
+    await zi2asmStep(zi2asm, 'optimization counters', [...checked, '--opt',
+      '--emit', 'opt-report', '-o', at('optimization.json'), input], output);
+    await zi2asmStep(zi2asm, 'linked portable ZX instructions', [...checked,
+      '--emit', 'zx', '-o', zx, input], output);
     for (const [stage, args] of [
-      ['lowered instruction listing', ['--emit', 'lir', '-o', at('lowered.lir')]],
-      ['optimized instruction listing', ['--opt', '--emit', 'lir', '-o', at('optimized.lir')]],
-      ['optimization counters', ['--opt', '--emit', 'opt-report', '-o', at('optimization.json')]],
-      ['final native map', ['--opt', '--emit', 'map', '-o', at('final.map.json')]],
-      ['final ELF', ['--opt', '--emit', 'elf', '-o', at('final.elf')]],
-    ]) await zi2asmStep(zi2asm, stage, ['--input', 'exec', ...args, lirb], output);
+      ['verified ZX instruction listing', ['--emit', 'lir', '-o', at('optimized.lir')]],
+      ['final native map', ['--emit', 'map', '-o', at('final.map.json')]],
+      ['final ELF', ['--emit', 'elf', '-o', at('final.elf')]],
+    ]) await zi2asmStep(zi2asm, stage, ['--input', 'zx', ...args, zx], output);
     const map = JSON.parse(await fs.readFile(at('final.map.json'), 'utf8'));
     const address = map.image?.text_virtual_address;
     if (!Number.isInteger(address) || address < 0) throw new Error('final native map: image.text_virtual_address is missing');
-    const adjustment = `-0x${address.toString(16)}`;
     const body = at('final.objdump');
-    const disassembled = await runToFile('objdump', ['-d', `--adjust-vma=${adjustment}`, 'final.elf'], output, body);
+    const disassembled = await runToFile('objdump', ['-d', 'final.elf'], output, body);
     if (disassembled.code !== 0) throw new Error(`final disassembly: ${problem(disassembled, 'objdump')}`);
     const disassembly = `# Ziran direct-assembly final disassembly\n` +
       `# map identity: ${map.identity?.algorithm || ''} ${map.identity?.scope || ''} ${map.identity?.digest || ''}\n` +
       `# image.text_virtual_address: 0x${address.toString(16)} (${address})\n` +
-      `# command: objdump -d --adjust-vma=${adjustment} final.elf\n\n` + await readText(body);
+      `# Addresses are ELF virtual addresses; subtract the text address for text-relative offsets.\n` +
+      `# command: objdump -d final.elf\n\n` + await readText(body);
     return { ok: true, message: '', views: [
-      view('lowered', 'Lowered', [{ name: 'lowered.lir', text: await readText(at('lowered.lir')) }]),
+      view('source', 'Source', [{ name: path.basename(file), text: await readText(file) }]),
+      view('checked', 'Checked ZIR', checkedFiles),
+      view('lowered', 'LIR', [{ name: 'lowered.lir', text: await readText(at('lowered.lir')) }]),
       view('optimized', 'Optimized', [
         { name: 'optimized.lir', text: await readText(at('optimized.lir')) },
-        { name: 'optimization.json', text: await readText(at('optimization.json')) }]),
-      view('disassembly', 'Disassembly', [{ name: 'final.disasm', text: disassembly }],
-        'objdump of the ELF zi2asm encoded'),
-      view('binary', 'Binary', [await binaryFile(at('final.elf')), await binaryFile(lirb)]),
+        { name: 'optimization.json', text: await readText(at('optimization.json')) }],
+        'Verified instructions read from portable.zx; optimization runs before ZX is written'),
+      view('zx', 'ZX', [await binaryFile(zx)],
+        'Linked portable revision-28 instructions, used directly for target lowering'),
+      view('disassembly', 'Assembly', [{ name: 'final.disasm', text: disassembly }],
+        'objdump of the ELF lowered directly from verified ZX; no generated C or Go'),
+      view('binary', 'ELF', [await binaryFile(at('final.elf'))],
+        'Direct native platform binary; host services use target-owned bindings'),
     ] };
   } catch (error) {
     return { ok: false, message: `Native inspection failed during ${error.message}`, views: [] };
@@ -666,7 +638,7 @@ async function buildSource(context, target) {
   return { ok: true, message: '', views: [view('source', 'Source', await textFiles(output))] };
 }
 
-const BUILDERS = { c: buildC, go: buildGo, wasm: buildWasm, zx: buildZx, native: buildNative };
+const BUILDERS = { c: buildC, go: buildGo, wasm: buildWasm, native: buildNative };
 
 // Build FILE for TARGET under WORKDIRECTORY and return its views: generated
 // source, assembly and the binary it produces, each a list of files.

@@ -12,8 +12,18 @@ const real = Boolean(process.env.ZIRAN_PREVIEW_PROJECT);
 const project = process.env.ZIRAN_PREVIEW_PROJECT || path.join(runtime, 'hello');
 const entry = process.env.ZIRAN_PREVIEW_ENTRY || 'hello.zi';
 const installed = process.env.ZIRAN_INSTALLED_EXTENSION;
+const nativeOnly = process.env.ZIRAN_RUN_NATIVE === '1';
 let child, browser;
 try {
+  if (nativeOnly) {
+    assert.ok(real, 'Native inspection uses an existing project and example');
+    const user = path.join(runtime, 'profile/User');
+    await fs.mkdir(user, { recursive: true });
+    await fs.writeFile(path.join(user, 'settings.json'), JSON.stringify({
+      'ziran.command': path.resolve(repo, '../ziran/build/bin/ziran'),
+      'ziran.previewTargets': ['native'],
+    }));
+  }
   if (!real) {
     await fs.mkdir(path.join(project, '.vscode'), { recursive: true });
     await fs.writeFile(path.join(project, 'hello.zi'), 'main :: () { print("Hello, World!\\n"); }\n');
@@ -56,7 +66,33 @@ try {
     if (!run) await new Promise(resolve => setTimeout(resolve, 100));
   }
   assert.ok(run, `Ziran Run webview must open: ${errors}`);
-  if (real) {
+  if (nativeOnly) {
+    await run.waitForFunction(() => document.querySelector('#screen').textContent === 'Hello, World!\n',
+      null, { timeout: 180000 });
+    const native = run.locator('#tabs').getByRole('tab', { name: 'Native', exact: true });
+    await native.click({ timeout: 180000 });
+    assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(),
+      ['Source', 'Checked ZIR', 'LIR', 'Optimized', 'ZX', 'Assembly', 'ELF']);
+    const view = name => run.locator('#views').getByRole('tab', { name, exact: true });
+    await view('Checked ZIR').click();
+    assert.match(await run.locator('#code').textContent(), /function main/);
+    await view('LIR').click();
+    assert.match(await run.locator('#code').textContent(), /^lir \d+ entry/);
+    await view('ZX').click();
+    await run.waitForFunction(() => document.querySelector('#hex-title').textContent.startsWith('portable.zx'));
+    await view('Assembly').click();
+    assert.match(await run.locator('#code').textContent(), /<hello:main>:[\s\S]*syscall/);
+    await view('ELF').click();
+    await run.waitForFunction(() => /hello:main at 0x[0-9a-f]+ \(\.text\)/
+      .test(document.querySelector('#hex-code').textContent));
+    assert.equal(await run.locator('#hex-headers').isChecked(), false);
+    await run.locator('#hex-headers').check();
+    await run.waitForFunction(() => /^00000000  7f 45 4c 46 /
+      .test(document.querySelector('#hex-rows').textContent));
+    assert.equal(await fs.readFile(path.join(runtime, 'activated'), 'utf8'), installed || repo);
+    await fs.writeFile(path.join(runtime, 'done'), '');
+    console.log(`Local installed VS Code Native test: ${entry}; source, checked ZIR, LIR, ZX, syscall assembly and main-first ELF/header views passed.`);
+  } else if (real) {
     await run.waitForFunction(() => document.querySelector('[role=tab]'), null, {timeout:180000});
     for (const tab of ['C', 'Go', 'ZIR']) {
       await run.getByRole('tab', {name: tab, exact: true}).click({timeout:180000});
@@ -78,9 +114,10 @@ try {
       new RegExp(source).test(document.querySelector('#hex-rows').textContent.split('\n')[0]),
       pattern.source, { timeout: 60000 });
     await run.waitForFunction(() => document.querySelector('#screen').textContent === 'Hello, World!\n');
-    await tab('ZX').waitFor({ timeout: 180000 });
+    await tab('Native').waitFor({ timeout: 180000 });
     await run.waitForFunction(() => !document.querySelector('#status').textContent.includes('…'), null, { timeout: 180000 });
-    assert.deepEqual(await run.locator('#tabs').getByRole('tab').allTextContents(), ['C', 'Go', 'ZIR', 'Wasm', 'ZX']);
+    assert.deepEqual(await run.locator('#tabs').getByRole('tab').allTextContents(), ['C', 'Go', 'ZIR', 'Wasm', 'Native']);
+    assert.deepEqual(await run.locator('#targets input').count(), 4);
 
     await tab('C').click();
     assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(), ['Source', 'Assembly', 'Binary']);
@@ -131,13 +168,17 @@ try {
     await firstRow(new RegExp('^' + wasmStart.toString(16).padStart(8, '0') + '  '));
     await run.locator('#hex-headers').check();
     await firstRow(/^00000000  00 61 73 6d /);
-    await tab('ZX').click();
-    assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(), ['Listing', 'Instructions ✕', 'Binary']);
-    assert.match(await code(), /bundle entry hello:main/);
-    await view('Instructions ✕').click();
-    assert.match(await code(), /zi2asm/);
-    await view('Binary').click();
-    await firstRow(/^00000000  /);
+    await tab('Native').click();
+    assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(),
+      ['Source', 'Checked ZIR', 'LIR', 'Optimized', 'ZX', 'Assembly', 'ELF']);
+    assert.match(await code(), /Hello, World!/);
+    await view('LIR').click();
+    assert.match(await code(), /^lir \d+ entry/);
+    await view('ELF').click();
+    await run.waitForFunction(() => /hello:main at 0x[0-9a-f]+ \(\.text\)/
+      .test(document.querySelector('#hex-code').textContent));
+    await run.locator('#hex-headers').check();
+    await firstRow(/^00000000  7f 45 4c 46 /);
 
     await tab('Wasm').click();
     await fs.writeFile(path.join(runtime, 'edit'), 'main :: () { print("Saved!\\n"); }\n');
@@ -175,7 +216,7 @@ try {
 
     assert.equal(await fs.readFile(path.join(runtime, 'activated'), 'utf8'), installed || repo);
     await fs.writeFile(path.join(runtime, 'done'), '');
-    console.log('Local VS Code test: hello-world execution; C, Go, ZIR, Wasm and ZX source/assembly/binary views; paged hex scrolling; save/rebuild; no-main module message passed.');
+    console.log('Local VS Code test: hello-world execution; C, Go, ZIR, Wasm and unified Native/ZX stage views; legacy ZX setting migration; paged hex scrolling; save/rebuild; no-main module message passed.');
   }
 } finally {
   await browser?.close().catch(() => {});

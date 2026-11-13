@@ -3,18 +3,19 @@ import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 const require = createRequire(import.meta.url);
-const { HEX_VIEW_SOURCE, HIGHLIGHT_SOURCE, binaryContentStart, elfCodeStart, mainLine, runHtml, runSteps } = require('../run.cjs');
+const { HEX_VIEW_SOURCE, HIGHLIGHT_SOURCE, binaryContentStart, elfCodeStart, mainLine, runHtml, runSteps, workDirectoryFor } = require('../run.cjs');
 const put = (data, values) => { for (const [method, offset, value] of values) data[method](value, offset); return data; };
-function elf64(main = true) {
+function elf64(main = true, mainName = 'main') {
   const data = Buffer.alloc(0x500); Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]).copy(data);
   put(data, [['writeUInt16LE', 16, 2], ['writeUInt16LE', 18, 0x3e], ['writeUInt32LE', 20, 1],
     ['writeBigUInt64LE', 24, 0x401000n], ['writeBigUInt64LE', 32, 0n], ['writeBigUInt64LE', 40, 0x300n],
     ['writeUInt16LE', 52, 64], ['writeUInt16LE', 54, 56], ['writeUInt16LE', 58, 64],
     ['writeUInt16LE', 60, 5], ['writeUInt16LE', 62, 1]]);
   Buffer.from('\0.shstrtab\0.strtab\0.symtab\0.text\0').copy(data, 0x200);
-  Buffer.from(main ? '\0main\0' : '\0other\0').copy(data, 0x240);
+  const symbolName = main ? mainName : 'other';
+  Buffer.from(`\0${symbolName}\0`).copy(data, 0x240);
   for (const [offset, name, type, fileOffset, size] of [[0x340, 1, 3, 0x200n, 33n],
-    [0x380, 11, 3, 0x240n, BigInt(main ? 6 : 7)], [0x3c0, 19, 2, 0x280n, 48n]])
+    [0x380, 11, 3, 0x240n, BigInt(Buffer.byteLength(symbolName) + 2)], [0x3c0, 19, 2, 0x280n, 48n]])
     put(data, [['writeUInt32LE', offset, name], ['writeUInt32LE', offset + 4, type],
       ['writeBigUInt64LE', offset + 24, fileOffset], ['writeBigUInt64LE', offset + 32, size]]);
   put(data, [['writeUInt32LE', 0x3e8, 2], ['writeBigUInt64LE', 0x3f8, 24n],
@@ -57,6 +58,7 @@ test('binary views start at executable content and reject malformed inputs', () 
   const wasm = Buffer.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 1, 0x60, 10, 4, 1, 2, 0, 0]);
   for (const [name, input, expected] of [
     ['ELF main', elf64(), { offset: 0x190, label: 'main at 0x190 (.text)', toggleLabel: 'Show ELF headers' }],
+    ['Ziran main', elf64(true, 'hello:main'), { offset: 0x190, label: 'hello:main at 0x190 (.text)', toggleLabel: 'Show ELF headers' }],
     ['stripped ELF', elf64(false), { offset: 0x180, label: 'code starts at 0x180 (.text)', toggleLabel: 'Show ELF headers' }],
     ['ELF64 entry', elf64Entry(), { offset: 0x100, label: 'code starts at 0x100 (entry segment)', toggleLabel: 'Show ELF headers' }],
     ['ELF32 big endian', elf32Entry(), { offset: 0x80, label: 'code starts at 0x80 (entry segment)', toggleLabel: 'Show ELF headers' }],
@@ -69,6 +71,10 @@ test('binary views start at executable content and reject malformed inputs', () 
     assert.equal(binaryContentStart(input), null);
 });
 test('run commands, webview navigation and generated-code highlighting stay valid', () => {
+  const work = workDirectoryFor('/notes/hello.zi', '/extension-storage/run/owned');
+  assert.match(work, /^\/extension-storage\/run\/owned\/[0-9a-f]{16}$/);
+  assert.equal(workDirectoryFor('/notes/hello.zi', '/extension-storage/run/owned'), work);
+  assert.notEqual(workDirectoryFor('/notes/other.zi', '/extension-storage/run/owned'), work);
   assert.equal(mainLine('// hello\nmain :: () {\n}\n'), 1);
   for (const source of ['Answer :: () -> s32 { return 42 }\n', '  main :: () {}\n']) assert.equal(mainLine(source), -1);
   assert.deepEqual(runSteps('ziran', '/notes/hello.zi', ['/std'], '/tmp/hello.zx'), [

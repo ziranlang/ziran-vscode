@@ -35,6 +35,24 @@ it on demand. A file without `main :: ()` still shows its generated code and
 with `ziran run` on the portable runtime. In Kryon projects ▶ runs the Kryon
 preview instead.
 
+Select **Native** to inspect the direct pipeline: source → checked ZIR → LIR →
+linked portable ZX instructions → target assembly → ELF. The Optimized view
+shows the verified instructions read back from ZX and the source optimization
+report. Assembly is an `objdump` of the final ELF, not generated C or Go. The
+ELF hex view starts at `main`; its header toggle still reveals the whole file.
+C and Go also produce binaries, but are separate generated-code routes.
+There is one Native checkbox: ZX is a portable instruction stage within it, not
+a second target. Native is enabled by default; an older `previewTargets` entry
+of `"zx"` selects Native automatically without creating a duplicate option.
+
+Direct native console output currently supports Linux x86-64 using Ziran-owned
+formatting and syscall veneers, without libc or a dynamic linker. Unsupported
+services, targets and formatting (including floats) produce named gap errors;
+Native never falls back to another engine. The regular Run output above these
+inspection views still uses the portable runtime.
+Build outputs stay in the extension's private storage and are removed when its
+Run pane closes; the original example is never replaced with generated stages.
+
 ## Checking
 
 Opening or saving a `.zi` file runs `ziran check` on it and lists any errors in
@@ -144,6 +162,11 @@ For generated-code Preview on an existing source file, use
 Set `ZIRAN_PREVIEW_WORKSPACE` to a parent folder to test workspace nesting.
 This mode reads the real source without saving edits and verifies its C, Go
 and checked IR views in a private VSCode window.
+
+Add `ZIRAN_RUN_NATIVE=1` to inspect the existing `examples/hello.zi` through every
+Native stage instead. For example, set `ZIRAN_PREVIEW_PROJECT` to the canonical
+Ziran checkout and `ZIRAN_PREVIEW_ENTRY=examples/hello.zi`. This also verifies
+main-first ELF navigation and the header toggle without changing that source.
 
 Run `npm run test:laws` to verify law token colors in an isolated native VSCode
 window on private Xvfb. Set `ZIRAN_INSTALLED_EXTENSION` to an installed extension
