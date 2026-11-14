@@ -404,6 +404,7 @@ function runHtml(nonce) {
   .tab:hover { background: var(--vscode-toolbar-hoverBackground, transparent); }
   .tab[aria-selected="true"] { border-bottom-color: var(--vscode-focusBorder); font-weight: bold; }
   .tab.failed { color: var(--vscode-errorForeground); }
+  .tab.pending { opacity: .7; }
   .file-row { margin-bottom: 8px; }
   .file-row:empty { display: none; }
   .views:empty { display: none; }
@@ -575,12 +576,12 @@ ${HEX_VIEW_SOURCE}
     return bytes;
   };
 
-  const tab = (label, chosen, failed, select) => {
+  const tab = (label, chosen, failed, select, pending = false) => {
     const button = document.createElement('button');
-    button.className = 'tab' + (failed ? ' failed' : '');
+    button.className = 'tab' + (failed ? ' failed' : '') + (pending ? ' pending' : '');
     button.setAttribute('role', 'tab');
     button.setAttribute('aria-selected', String(chosen));
-    button.textContent = label + (failed ? ' ✕' : '');
+    button.textContent = label + (failed ? ' ✕' : '') + (pending ? ' …' : '');
     button.addEventListener('click', select);
     return button;
   };
@@ -618,7 +619,7 @@ ${HEX_VIEW_SOURCE}
     for (const result of results) {
       const target = state.targets.find((item) => item.id === result.id);
       tabs.append(tab(result.label || (target ? target.label : result.id), result.id === selected, !result.ok,
-        () => { selected = result.id; remember(); renderCode(); }));
+        () => { selected = result.id; remember(); renderCode(); }, Boolean(result.pending)));
     }
     const result = results.find((item) => item.id === selected);
     const viewTabs = byId('views');
@@ -635,6 +636,12 @@ ${HEX_VIEW_SOURCE}
     }
     if (!result.ok) { showProblem(result.message); return; }
     const available = result.views || [];
+    if (result.pending && !available.length) {
+      hideHex();
+      const target = state.targets.find((item) => item.id === result.id);
+      code.textContent = 'Building ' + (result.label || (target ? target.label : result.id)) + '…';
+      return;
+    }
     if (!available.some((item) => item.id === views[result.id])) {
       views[result.id] = available[0] ? available[0].id : '';
     }
@@ -805,24 +812,25 @@ class RunPreview {
 
   // Binaries stay on disk; the webview receives a key and size and asks for
   // pages of bytes by key.
-  async register(results) {
+  beginRegistration() {
     this.generation++;
     this.binaries = new Map();
-    for (const result of results) {
-      for (const item of result.views || []) {
-        for (const file of item.files || []) {
-          if (!file.binary?.path) continue;
-          const key = `${this.generation}:${result.id}:${item.id}:${file.name}`;
-          this.binaries.set(key, file.binary.path);
-          let content = null;
-          try { content = binaryContentStart(await fs.readFile(file.binary.path)); } catch {}
-          file.binary = { key, size: file.binary.size,
-            ...(content ? { contentStart: content.offset, contentLabel: content.label,
-              toggleLabel: content.toggleLabel } : {}) };
-        }
+  }
+
+  async registerResult(result) {
+    for (const item of result.views || []) {
+      for (const file of item.files || []) {
+        if (!file.binary?.path) continue;
+        const key = `${this.generation}:${result.id}:${item.id}:${file.name}`;
+        this.binaries.set(key, file.binary.path);
+        let content = null;
+        try { content = binaryContentStart(await fs.readFile(file.binary.path)); } catch {}
+        file.binary = { key, size: file.binary.size,
+          ...(content ? { contentStart: content.offset, contentLabel: content.label,
+            toggleLabel: content.toggleLabel } : {}) };
       }
     }
-    return results;
+    return result;
   }
 
   async runProgram(command, paths, folders) {
@@ -915,14 +923,24 @@ class RunPreview {
         this.state.running = false;
         this.post();
       });
-      const [results] = await Promise.all([
-        Promise.all(this.state.enabled.map((target) =>
+      // Every enabled target has its tab at once, still showing the last
+      // run's output; each fills in as its own build finishes.
+      const previous = new Map(this.state.results.map((result) => [result.id, result]));
+      this.state.results = this.state.enabled.map((target) =>
+        ({ ...(previous.get(target) || { id: target, ok: true, views: [] }), pending: true }));
+      this.beginRegistration();
+      this.post();
+      await Promise.all([
+        ...this.state.enabled.map((target, index) =>
           buildTarget(command, target, this.file, path.join(this.workDirectory, 'targets'), paths,
-            { hasMain, noMain, folders }))),
-        this.inspectIr(command, paths),
+            { hasMain, noMain, folders }).then(async (result) => {
+            await this.registerResult(result);
+            if (this.state.results[index]?.id === target) this.state.results[index] = result;
+            this.post();
+          })),
+        this.inspectIr(command, paths).then(() => this.post()),
         program,
       ]);
-      this.state.results = await this.register(results);
     } catch (error) {
       Object.assign(this.state, { status: 'Run failed', problems: error.message, failed: true });
     } finally {
