@@ -3,7 +3,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { parse } = require('@iarna/toml');
-const { randomBytes } = require('node:crypto');
+const { createHash, randomBytes } = require('node:crypto');
 
 function safeEnvironment(source = process.env) {
   const { DISPLAY, WAYLAND_DISPLAY, XAUTHORITY, DBUS_SESSION_BUS_ADDRESS, SESSION_MANAGER, ...environment } = source;
@@ -52,6 +52,88 @@ async function projectRoot(start) {
     if (parent === directory) return null;
     directory = parent;
   }
+}
+
+async function manifestRoot(start) {
+  let directory = start;
+  try {
+    if (!(await fs.stat(directory)).isDirectory()) directory = path.dirname(directory);
+  } catch { return null; }
+  while (true) {
+    if (await exists(path.join(directory, 'ziran.toml'))) return directory;
+    const parent = path.dirname(directory);
+    if (parent === directory) return null;
+    directory = parent;
+  }
+}
+
+async function isKryonProgram(file) {
+  if (!file?.endsWith('.zi')) return false;
+  let source;
+  try { source = await fs.readFile(file, 'utf8'); } catch { return false; }
+  return /^[ \t]*(?:[A-Za-z_]\w*[ \t]*::[ \t]*)?#import[ \t]+"kryon\/app"/m.test(source) &&
+    /^main\s*::\s*\(/m.test(source);
+}
+
+async function previewLocation(start) {
+  const root = await projectRoot(start);
+  if (root) return { key: root, root, source: start.endsWith?.('.zi') ? start : '', standalone: false };
+  if (await isKryonProgram(start)) {
+    return { key: start, root: null, source: start, standalone: true };
+  }
+  return null;
+}
+
+function standaloneRoot(file, storage) {
+  const key = createHash('sha256').update(file).digest('hex').slice(0, 16);
+  return path.join(storage, 'preview', key);
+}
+
+async function writeChanged(file, contents) {
+  let current = null;
+  try { current = await fs.readFile(file, 'utf8'); } catch {}
+  if (current !== contents) await fs.writeFile(file, contents);
+}
+
+// A lone program that owns main through kryon/app has no project of its own.
+// It is previewed as an extension-owned project with a canvas profile; the
+// Kryon tool builds a program entry's main for the page.
+async function prepareStandalonePreview(file, storage, vscode) {
+  const root = standaloneRoot(file, storage);
+  const sourceDirectory = path.join(root, 'src');
+  await fs.mkdir(sourceDirectory, { recursive: true });
+  const owner = await manifestRoot(file);
+  if (!owner) throw new Error('Kryon single-file preview needs a containing Ziran package.');
+  const { ziranCommand } = require('./targets.cjs');
+  const command = await ziranCommand(file, vscode);
+  const ownerManifest = parse(await fs.readFile(path.join(owner, 'ziran.toml'), 'utf8'));
+  let kryon = ownerManifest.package?.name === 'kryon' ? owner : '';
+  if (!kryon) {
+    const located = await runCommand(command, ['pkg', 'path', 'kryon'], owner);
+    if (located.code === 0) kryon = located.stdout.trim().split(/\r?\n/).pop();
+  }
+  const toolchain = await runCommand(command, ['pkg', 'path', 'ziran'], owner);
+  const ziran = toolchain.code === 0 ? toolchain.stdout.trim().split(/\r?\n/).pop() : '';
+  if (!kryon || !ziran) {
+    throw new Error('Kryon single-file preview could not resolve the kryon package and Ziran toolchain.');
+  }
+  const entry = path.basename(file);
+  const name = path.basename(file, '.zi').replace(/[^A-Za-z0-9_-]/g, '-') || 'preview';
+  const manifest = `[package]\nname = "${name}"\nentry = "src/${entry}"\nmodule_roots = ["src"]\ntool = "kryon"\n\n` +
+    `[toolchain]\ngit = "https://github.com/ziranlang/ziran.git"\nref = "master"\n\n` +
+    `[dependencies.kryon]\ngit = "https://github.com/kryonlabs/kryon.git"\nref = "master"\n\n` +
+    `[tool.kryon]\ndefault_profile = "preview"\nentry = "src/${entry}"\n\n` +
+    `[tool.kryon.profiles.preview]\nbackend = "canvas"\n`;
+  const local = `[overrides]\nkryon = ${JSON.stringify(kryon)}\nziran = ${JSON.stringify(ziran)}\n`;
+  await writeChanged(path.join(root, 'ziran.toml'), manifest);
+  await writeChanged(path.join(root, 'ziran.local.toml'), local);
+  await fs.copyFile(file, path.join(sourceDirectory, entry));
+  const locked = await runCommand(command, ['lock'], root);
+  if (locked.code !== 0) {
+    throw new Error((locked.stderr || locked.stdout).trim() ||
+      `ziran lock failed${locked.code === null ? '' : ` (exit ${locked.code})`}`);
+  }
+  return root;
 }
 
 async function manifestPath(root, name, fallback) {
@@ -146,9 +228,10 @@ function previewHtml(nonce) {
   details { margin-top: 16px; }
   summary { cursor: pointer; font-weight: bold; margin-bottom: 8px; }
 </style></head><body>
-<header><h1>Kryon Preview</h1><button id="run">Run again</button><span id="status">Starting…</span></header>
+<header><h1>Kryon Preview</h1><button id="run">Run again</button><button id="open-window">Open in New Window</button><button id="inspect">Inspect Targets</button><span id="status">Starting…</span></header>
 <div class="window" id="window"><div class="window-bar"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><span id="window-title"></span></div><iframe id="app" title="Interactive Kryon preview" sandbox="allow-scripts allow-pointer-lock"></iframe></div>
 <pre id="build-output"></pre>
+<details id="window-output"><summary>New window · <span id="window-status">Not opened</span></summary><h2>stdout</h2><pre id="window-stdout"></pre><h2>stderr</h2><pre id="window-stderr"></pre><div id="window-exit"></div></details>
 <details><summary>Generated C</summary><select id="c-files" aria-label="Generated C module"></select><pre id="c-source"></pre></details>
 <details><summary>ZIR (inspected)</summary><select id="ir-files" aria-label="ZIR module"></select><pre id="ir-source"></pre></details>
 <script nonce="${nonce}">
@@ -172,6 +255,14 @@ function previewHtml(nonce) {
     byId('status').textContent = data.status;
     byId('build-output').textContent = data.status.startsWith('Up to date') ? '' : data.output;
     byId('window-title').textContent = data.project;
+    byId('window-status').textContent = data.windowStatus;
+    byId('window-stdout').textContent = data.windowStdout;
+    byId('window-stderr').textContent = data.windowStderr;
+    byId('window-exit').textContent = data.windowExit === null ? '' : 'Exit status: ' + data.windowExit;
+    byId('open-window').disabled = data.windowBuilding;
+    byId('open-window').hidden = !data.program;
+    byId('inspect').hidden = !data.program;
+    byId('window-output').hidden = !data.program;
     if (data.html !== currentHtml) {
       currentHtml = data.html;
       byId('app').srcdoc = data.html || '';
@@ -182,28 +273,57 @@ function previewHtml(nonce) {
     byId('ir-source').textContent = data.irSource;
   });
   byId('run').addEventListener('click', () => api.postMessage({ type: 'run' }));
+  byId('open-window').addEventListener('click', () => api.postMessage({ type: 'openWindow' }));
+  byId('inspect').addEventListener('click', () => api.postMessage({ type: 'inspect' }));
   byId('c-files').addEventListener('change', (event) => api.postMessage({ type: 'c', file: event.target.value }));
   byId('ir-files').addEventListener('change', (event) => api.postMessage({ type: 'ir', file: event.target.value }));
   api.postMessage({ type: 'ready' });
 </script></body></html>`;
 }
 
+async function stopOwnedProcess(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise(resolve => child.once('exit', resolve));
+  try {
+    if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGTERM');
+    else child.kill('SIGTERM');
+  } catch {}
+  await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 1500))]);
+  if (child.exitCode === null && child.signalCode === null) {
+    try {
+      if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
+      else child.kill('SIGKILL');
+    } catch {}
+    await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 500))]);
+  }
+}
+
 class Preview {
-  constructor(root, context, vscode) {
-    this.root = root;
+  constructor(location, context, vscode) {
+    this.location = location;
+    this.source = location.source;
+    this.storage = context.globalStorageUri.fsPath;
+    this.root = location.root || standaloneRoot(location.source, this.storage);
     this.vscode = vscode;
     this.disposed = false;
     this.running = false;
     this.rerun = false;
+    this.windowChild = null;
+    this.windowQueue = Promise.resolve();
+    const title = this.source ? path.basename(this.source, '.zi') : path.basename(this.root);
     this.state = {
-      type: 'state', project: path.basename(root), status: 'Starting…', output: '', frame: '', html: '', cFiles: [], irFiles: [],
-      selectedC: '', selectedIr: '', cSource: '', irSource: '',
+      type: 'state', project: title, status: 'Starting…', output: '', frame: '', html: '', cFiles: [], irFiles: [],
+      selectedC: '', selectedIr: '', cSource: '', irSource: '', windowStatus: 'Not opened',
+      windowStdout: '', windowStderr: '', windowExit: null, windowBuilding: false,
+      // Only a single-file program has one source to run as a window or inspect.
+      program: Boolean(location.standalone),
     };
     this.panel = vscode.window.createWebviewPanel('kryonPreview',
-      `Preview: ${path.basename(root)}`, vscode.ViewColumn.Beside,
+      `Preview: ${title}`, vscode.ViewColumn.Beside,
       { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] });
     this.panel.webview.html = previewHtml(randomBytes(16).toString('hex'));
-    const watchRoot = vscode.workspace.getWorkspaceFolder?.(vscode.Uri.file(root))?.uri.fsPath || root;
+    const watchTarget = location.standalone ? path.dirname(this.source) : this.root;
+    const watchRoot = vscode.workspace.getWorkspaceFolder?.(vscode.Uri.file(watchTarget))?.uri.fsPath || watchTarget;
     this.disposables = [
       this.panel.onDidDispose(() => this.dispose()),
       this.panel.webview.onDidReceiveMessage((message) => this.message(message)),
@@ -230,6 +350,7 @@ class Preview {
     if (this.disposed) return;
     this.disposed = true;
     clearTimeout(this.timer);
+    void stopOwnedProcess(this.windowChild);
     for (const disposable of this.disposables) disposable.dispose();
   }
 
@@ -244,6 +365,13 @@ class Preview {
   async message(message) {
     if (message.type === 'ready') this.post();
     if (message.type === 'run') this.schedule();
+    if (message.type === 'openWindow') {
+      this.windowQueue = this.windowQueue.then(() => this.openWindow());
+      await this.windowQueue;
+    }
+    if (message.type === 'inspect' && this.location.standalone) {
+      await this.vscode.commands.executeCommand('ziran.inspect', this.vscode.Uri.file(this.source));
+    }
     if (message.type === 'c' && this.state.cFiles.includes(message.file)) {
       this.state.selectedC = message.file;
       await this.loadC();
@@ -254,6 +382,71 @@ class Preview {
       await this.loadIr();
       this.post();
     }
+  }
+
+  async openWindow() {
+    if (this.disposed || !this.location.standalone) return;
+    await stopOwnedProcess(this.windowChild);
+    this.windowChild = null;
+    Object.assign(this.state, { windowStatus: 'Building C executable…', windowStdout: '',
+      windowStderr: '', windowExit: null, windowBuilding: true });
+    this.post();
+    const { buildArgs, modulePaths, packageRoot, ziranCommand } = require('./targets.cjs');
+    const command = await ziranCommand(this.source, this.vscode);
+    const paths = await modulePaths(this.source, command, this.vscode);
+    const project = await packageRoot(this.source);
+    const cwd = project || path.dirname(this.source);
+    const key = createHash('sha256').update(this.source).digest('hex').slice(0, 16);
+    const output = path.join(this.storage, 'window-c', key);
+    await fs.rm(output, { recursive: true, force: true });
+    await fs.mkdir(output, { recursive: true });
+    const result = await runCommand(command,
+      buildArgs('c', this.source, output, paths, Boolean(project), { exe: true }), cwd);
+    if (this.disposed) return;
+    this.state.windowStdout = result.stdout;
+    this.state.windowStderr = result.stderr;
+    this.state.windowExit = result.code;
+    if (result.code !== 0) {
+      this.state.windowStatus = result.code === null ? 'Could not start the C build' : 'C build failed';
+      this.state.windowBuilding = false;
+      this.post();
+      return;
+    }
+    const program = path.join(output, path.basename(this.source, '.zi'));
+    if (!(await exists(program))) {
+      Object.assign(this.state, { windowStatus: 'C build wrote no executable', windowBuilding: false });
+      this.post();
+      return;
+    }
+    const child = spawn(program, [], { cwd, env: process.env, windowsHide: false,
+      detached: process.platform !== 'win32' });
+    this.windowChild = child;
+    Object.assign(this.state, { windowStatus: 'Window running', windowStdout: '', windowStderr: '',
+      windowExit: null, windowBuilding: false });
+    child.stdout.on('data', data => {
+      if (this.windowChild !== child) return;
+      this.state.windowStdout = (this.state.windowStdout + data.toString()).slice(-2 * 1024 * 1024);
+      this.post();
+    });
+    child.stderr.on('data', data => {
+      if (this.windowChild !== child) return;
+      this.state.windowStderr = (this.state.windowStderr + data.toString()).slice(-2 * 1024 * 1024);
+      this.post();
+    });
+    child.on('error', error => {
+      if (this.windowChild !== child) return;
+      this.state.windowStderr = error.message;
+      this.state.windowStatus = 'Could not open window';
+      this.post();
+    });
+    child.on('close', (code, signal) => {
+      if (this.windowChild !== child) return;
+      this.windowChild = null;
+      this.state.windowExit = code === null ? `signal ${signal}` : code;
+      this.state.windowStatus = signal ? 'Window stopped' : 'Window exited';
+      this.post();
+    });
+    this.post();
   }
 
   async loadC() {
@@ -279,8 +472,11 @@ class Preview {
     this.state.status = 'Building and running…';
     this.post();
     try {
+      if (this.location.standalone) {
+        this.root = await prepareStandalonePreview(this.source, this.storage, this.vscode);
+      }
       const configured = this.vscode.workspace.getConfiguration('ziran',
-        this.vscode.Uri.file(this.root));
+        this.vscode.Uri.file(this.source || this.root));
       let command = configured.get('kryonCommand', '');
       const local = path.join(os.homedir(), '.local', 'bin', 'kryon');
       if (!command) command = await exists(local) ? local : 'kryon';
@@ -325,6 +521,8 @@ class Preview {
 
 function activatePreview(context, vscode) {
   const previews = new Map();
+  // Deactivation ends every window a preview opened.
+  context.subscriptions.push({ dispose() { for (const preview of previews.values()) preview.dispose(); } });
   const runButton = vscode.window.createStatusBarItem('kryon.run',
     vscode.StatusBarAlignment.Left, 1000);
   runButton.name = 'Run Kryon';
@@ -341,7 +539,7 @@ function activatePreview(context, vscode) {
     for (const folder of vscode.workspace.workspaceFolders || []) locations.push(folder.uri.fsPath);
     let kryon = false;
     for (const location of locations) {
-      if (await projectRoot(location)) { kryon = true; break; }
+      if (await previewLocation(location)) { kryon = true; break; }
     }
     if (kryon) runButton.show(); else runButton.hide();
     vscode.commands.executeCommand('setContext', 'ziran.kryonProject', kryon);
@@ -351,36 +549,38 @@ function activatePreview(context, vscode) {
     vscode.workspace.onDidChangeWorkspaceFolders(updateRunButton),
     vscode.languages.registerCodeLensProvider({ language: 'ziran', scheme: 'file' }, {
       async provideCodeLenses(document) {
-        if (!(await projectRoot(document.uri.fsPath))) return [];
+        if (!(await previewLocation(document.uri.fsPath))) return [];
         return [new vscode.CodeLens(new vscode.Range(0, 0, 0, 0), {
-          title: '▶ Run Kryon Preview', command: 'kryon.preview',
+          title: '▶ Run Kryon Preview', command: 'kryon.preview', arguments: [document.uri],
         })];
       },
     }),
   );
   updateRunButton();
 
-  context.subscriptions.push(vscode.commands.registerCommand('kryon.preview', async () => {
+  context.subscriptions.push(vscode.commands.registerCommand('kryon.preview', async (uri) => {
     const locations = [];
+    if (uri?.scheme === 'file') locations.push(uri.fsPath);
     if (vscode.window.activeTextEditor?.document.uri.scheme === 'file') {
       locations.push(vscode.window.activeTextEditor.document.uri.fsPath);
     }
     for (const folder of vscode.workspace.workspaceFolders || []) locations.push(folder.uri.fsPath);
-    let root = null;
-    for (const location of locations) {
-      root = await projectRoot(location);
-      if (root) break;
+    let location = null;
+    for (const candidate of locations) {
+      const found = await previewLocation(candidate);
+      if (found) { location = found; break; }
     }
-    if (!root) {
-      vscode.window.showErrorMessage('Open a Kryon app containing ziran.toml or kryon.toml to preview a Kryon project.');
+    if (!location) {
+      vscode.window.showErrorMessage('Open a Kryon app or a .zi program importing kryon/app to preview it.');
       return;
     }
-    if (previews.has(root)) { previews.get(root).reveal(); return; }
-    const preview = new Preview(root, context, vscode);
-    previews.set(root, preview);
-    preview.panel.onDidDispose(() => previews.delete(root));
+    if (previews.has(location.key)) { previews.get(location.key).reveal(); return; }
+    const preview = new Preview(location, context, vscode);
+    previews.set(location.key, preview);
+    preview.panel.onDidDispose(() => previews.delete(location.key));
   }));
 }
 
 module.exports = { activatePreview, generatedFiles, manifestPath, previewHtml,
-  projectRoot, runCommand, safeEnvironment, previewBuild, previewInput, Preview };
+  isKryonProgram, prepareStandalonePreview, previewLocation, projectRoot, runCommand,
+  safeEnvironment, previewBuild, previewInput, Preview, stopOwnedProcess };

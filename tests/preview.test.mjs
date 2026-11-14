@@ -5,7 +5,8 @@ import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 const require = createRequire(import.meta.url);
-const { generatedFiles, manifestPath, previewBuild, previewHtml, projectRoot, safeEnvironment } = require('../preview.cjs');
+const { generatedFiles, isKryonProgram, manifestPath, previewBuild, previewHtml, previewLocation,
+  projectRoot, safeEnvironment } = require('../preview.cjs');
 test('preview discovers projects, artifacts, profiles and package inspectors', async () => {
   const directory = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-preview-'));
   const targets = require('../targets.cjs');
@@ -32,6 +33,17 @@ test('preview discovers projects, artifacts, profiles and package inspectors', a
     assert.equal(await projectRoot(path.join(pkg, 'button.zi')), pkg);
     assert.equal((await previewBuild(pkg)).profile, 'portable_web');
     await assert.rejects(previewBuild(pkg, 'desktop'), /canvas profile/);
+    const provider = path.join(directory, 'kryon');
+    await fs.mkdir(path.join(provider, 'examples'), { recursive: true });
+    await fs.writeFile(path.join(provider, 'ziran.toml'),
+      '[package]\nname="kryon"\n[tool]\nproject="build/bin/kryon"\n');
+    const standalone = path.join(provider, 'examples/window.zi');
+    await fs.writeFile(standalone,
+      'App :: #import "kryon/app";\nmain :: () -> s32 { return App.Run(App.Window.{}) }\n');
+    assert.equal(await projectRoot(standalone), null);
+    assert.equal(await isKryonProgram(standalone), true);
+    assert.deepEqual(await previewLocation(standalone),
+      { key: standalone, root: null, source: standalone, standalone: true });
     const decoy = path.join(directory, 'build/bin/ziran');
     await fs.mkdir(path.dirname(decoy), { recursive: true });
     await fs.writeFile(decoy, '#!/bin/sh\necho DECOY\n', { mode: 0o755 });
@@ -75,6 +87,9 @@ test('preview keeps child environments, webviews and rebuild inputs safe', () =>
     assert.equal(previewInput(root, path.join(root, file)), false, file);
   const html = previewHtml('nonce');
   assert.match(html, /<iframe id="app"/);
+  assert.match(html, />Open in New Window<.*id="window-status"/s);
+  assert.match(html, /id="inspect">Inspect Targets</);
+  assert.match(html, /id="window-stdout".*id="window-stderr".*id="window-exit"/s);
   assert.doesNotThrow(() => new vm.Script(html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]));
 });
 test('preview assets refresh embedded files and reject paths outside the build', async () => {

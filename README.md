@@ -102,6 +102,31 @@ the preview; fixing and saving the source restores it. Generated C and inspected
 `.zir` modules come from `build/generated/PROFILE/`. Preview builds cannot inherit
 the desktop display.
 
+### Kryon programs
+
+A `.zi` file that imports `kryon/app` and declares `main`, such as Kryon's
+`examples/window.zi`, is a program that opens its own window. Running it, with
+▶, **▶ Run** or **Kryon: Preview**, opens this preview instead of the Run
+pane, and the program's real interface runs live inside the frame. The
+extension keeps a private project for the file in its own storage, with one
+canvas profile, and the Kryon tool builds the program's `main` for the page.
+
+The portable Run pane does not run such a program: the portable runtime has no
+window host, so `App.Run` would return its failure status and the pane would
+print that result, `1`, as the program's value. It is `main`'s return value,
+not output, and in a C-generated executable the same integer is the process
+exit status. **Inspect Targets**, in the preview and the editor title bar,
+opens the Run pane for the file anyway, with a note in place of the output and
+the usual C, Go, WebAssembly and Native views of its generated code.
+
+**Open in New Window** builds the C-generated executable with
+`ziran build --target=c --exe` and starts it, so the program opens its real
+operating-system window. The preview owns that process: opening again
+replaces it, and closing the preview or VS Code ends it. The window's stdout,
+stderr and exit status appear separately under **New window**. This is the
+C-generated binary; the Native view stays the direct ZX-to-machine-code route,
+which has no window services yet.
+
 ## Browse checked modules
 
 Open any `.zir` file in VS Code to see its inspected declarations and expressions
@@ -157,6 +182,12 @@ Set `ZIRAN_PREVIEW_FIXTURE=1` for a disposable real Button app using canonical
 Kryon/compiler overrides. That test also compiles saved edits, verifies an actual
 malformed-source error, repairs it, and checks restored interactive pixels.
 Maintained example sources are never edited.
+
+Set `ZIRAN_PREVIEW_WINDOW=1` and `ZIRAN_RUN_TEST=1` with `ZIRAN_PREVIEW_PROJECT`
+at a Kryon checkout and `ZIRAN_PREVIEW_ENTRY=examples/window.zi` to test a Kryon
+program: Run must open the live embedded canvas, and Open in New Window must
+map exactly one real window on the private display, replace it when reopened,
+and end it with VS Code.
 
 For generated-code Preview on an existing source file, use
 `ZIRAN_PREVIEW_PROJECT=/path/to/package ZIRAN_PREVIEW_ENTRY=relative/file.zi npm run test:run`.

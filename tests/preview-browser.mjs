@@ -2,15 +2,17 @@
 import { chromium } from 'playwright-core';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
 const repo = path.resolve(import.meta.dirname, '..');
 const runtime = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-electron-'));
 let fixture;
 let project;
 const real = Boolean(process.env.ZIRAN_PREVIEW_FIXTURE || process.env.ZIRAN_PREVIEW_PROJECT);
+const windowExample = process.env.ZIRAN_PREVIEW_WINDOW === '1';
 let browser;
 let child;
+let windowProcess;
 const installed = process.env.ZIRAN_INSTALLED_EXTENSION;
 try {
   fixture = process.env.ZIRAN_PREVIEW_FIXTURE ? await (await import('./preview-fixture.cjs')).default.createFixture(runtime, repo) : null;
@@ -73,6 +75,61 @@ try {
     assert.match(await preview.locator('#build-output').textContent(), /invalid-source/);
     await fs.writeFile(path.join(runtime,'edit'), '<button>Recovered</button>');
     await preview.locator('#app').contentFrame().getByRole('button',{name:'Recovered'}).waitFor();
+  } else if (windowExample) {
+    assert.equal(await preview.locator('#screen').count(), 0,
+      'Kryon entries must not open the portable scalar-output Run pane');
+    assert.equal(await preview.locator('#open-window').textContent(), 'Open in New Window');
+    await app.locator('canvas').waitFor({ timeout: 180000 });
+    // The program's own main runs in the page: it paints the whole canvas.
+    const painted = () => app.locator('canvas').first().evaluate(canvas => {
+      const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      let count = 0;
+      for (let index = 3; index < data.length; index += 4) if (data[index]) count += 1;
+      return { width: canvas.width, height: canvas.height, painted: count };
+    });
+    let pixels = await painted();
+    for (let attempt = 0; attempt < 600 && pixels.painted === 0; attempt++) {
+      await app.waitForTimeout(100);
+      pixels = await painted();
+    }
+    assert.ok(pixels.painted > 0 && pixels.painted === pixels.width * pixels.height, JSON.stringify(pixels));
+    assert.notEqual((await app.locator('body').textContent()).trim(), '1');
+    console.log('Real window.zi runs as an embedded Kryon canvas, not portable scalar output:', pixels);
+    // Open in New Window runs the C-generated binary as one owned process
+    // whose real OS window maps on this private display.
+    const windows = () => execFileSync('xwininfo', ['-root', '-tree'], { encoding: 'utf8' })
+      .split('\n').filter(line => /"Window": \("window" "window"\)/.test(line)).length;
+    const owned = () => {
+      try { return execFileSync('pgrep', ['-f', `${runtime}/profile/.*/window-c/`], { encoding: 'utf8' }).trim().split('\n').filter(Boolean); }
+      catch { return []; }
+    };
+    // Another installed extension may leave a quick input open over the pane.
+    const dismiss = () => preview.page().keyboard.press('Escape');
+    for (const round of [1, 2]) {
+      await dismiss();
+      await preview.locator('#open-window').click();
+      await preview.waitForFunction(() => document.querySelector('#window-status').textContent === 'Window running', null, { timeout: 180000 });
+      for (let attempt = 0; attempt < 100 && windows() !== 1; attempt++) await app.waitForTimeout(100);
+      assert.equal(windows(), 1, `round ${round}: exactly one mapped Window`);
+      assert.equal(owned().length, 1, `round ${round}: exactly one owned window process`);
+      assert.equal(await preview.locator('#window-exit').textContent(), '');
+    }
+    windowProcess = owned()[0];
+    // Inspect Targets opens the Run pane for the same file without running it
+    // on the portable runtime, which has no window host.
+    await dismiss();
+    await preview.locator('#inspect').click();
+    let inspected;
+    for (let attempt = 0; attempt < 300 && !inspected; attempt++) {
+      for (const context of browser.contexts()) for (const page of context.pages()) for (const frame of page.frames()) {
+        if (await frame.locator('#screen').count() &&
+            /Kryon program opens its own window/.test(await frame.locator('#screen').textContent())) inspected = frame;
+      }
+      if (!inspected) await app.waitForTimeout(100);
+    }
+    assert.ok(inspected, 'Inspect Targets must open the Run pane with the Kryon program notice');
+    assert.notEqual((await inspected.locator('#screen').textContent()).trim(), '1');
+    console.log('Open in New Window mapped one real "Window" and reopening replaced the owned process.');
   } else {
     await app.locator('canvas').waitFor();
     const pixels = await app.locator('canvas').first().evaluate(canvas=>({width:canvas.width,height:canvas.height}));
@@ -125,6 +182,17 @@ try {
   if(child && child.exitCode===null) {
     child.kill('SIGTERM');
     await new Promise(resolve => child.once('exit', resolve));
+  }
+  if (windowProcess) {
+    // Closing VS Code ends the window it opened.
+    let alive = true;
+    for (let attempt = 0; attempt < 50 && alive; attempt++) {
+      try { process.kill(Number(windowProcess), 0); await new Promise(resolve => setTimeout(resolve, 100)); }
+      catch { alive = false; }
+    }
+    if (alive) { try { process.kill(Number(windowProcess), 'SIGKILL'); } catch {} }
+    assert.equal(alive, false, 'the owned window process must not outlive VS Code');
+    console.log('The owned window process ended with VS Code.');
   }
   await fs.rm(runtime,{recursive:true,force:true});
 }

@@ -101,9 +101,16 @@ try {
       await run.locator('#code').filter({hasText: /function|#include|package/}).waitFor({timeout:180000});
       assert.doesNotMatch(await run.locator('#code').textContent(), /cannot find imported module/);
     }
+    // The program's bundle and run use one toolchain: a project bundle is
+    // never read by a different install that rejects its ZIR.
+    await run.waitForFunction(() => !/…/.test(document.querySelector('#status').textContent), null, { timeout: 180000 });
+    const status = await run.locator('#status').textContent();
+    const problems = await run.locator('#problems').textContent();
+    assert.doesNotMatch(problems, /unsupported ZIR version|invalid embedded ZIR/, problems);
+    assert.match(status, /^Up to date/, `${status}\n${problems}`);
     assert.equal(await fs.readFile(path.join(runtime, 'activated'), 'utf8'), installed || repo);
     await fs.writeFile(path.join(runtime, 'done'), '');
-    console.log(`Local VS Code test: ${entry} C, Go and checked IR resolved with real project dependencies; workspace ${process.env.ZIRAN_PREVIEW_WORKSPACE || project}.`);
+    console.log(`Local VS Code test: ${entry} ran (${status.trim()}); C, Go and ZIR resolved with real project dependencies; workspace ${process.env.ZIRAN_PREVIEW_WORKSPACE || project}.`);
   } else {
     const tab = (name) => run.locator('#tabs').getByRole('tab', { name, exact: true });
     const view = (name) => run.locator('#views').getByRole('tab', { name, exact: true });

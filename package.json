@@ -48,6 +48,11 @@
         "command": "kryon.preview",
         "title": "Kryon: Preview",
         "icon": "$(play)"
+      },
+      {
+        "command": "ziran.inspect",
+        "title": "Ziran: Inspect Targets",
+        "icon": "$(list-tree)"
       }
     ],
     "menus": {
@@ -61,6 +66,11 @@
           "command": "kryon.preview",
           "when": "resourceExtname == .zi && ziran.kryonProject",
           "group": "navigation@2"
+        },
+        {
+          "command": "ziran.inspect",
+          "when": "resourceExtname == .zi && ziran.kryonProject",
+          "group": "navigation@3"
         }
       ],
       "commandPalette": [

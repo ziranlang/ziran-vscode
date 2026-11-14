@@ -3,7 +3,8 @@ import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 const require = createRequire(import.meta.url);
-const { HEX_VIEW_SOURCE, HIGHLIGHT_SOURCE, binaryContentStart, elfCodeStart, mainLine, runHtml, runSteps, workDirectoryFor } = require('../run.cjs');
+const { HEX_VIEW_SOURCE, HIGHLIGHT_SOURCE, binaryContentStart, elfCodeStart, mainLine, runHtml,
+  runSteps, versionMismatchProblem, workDirectoryFor } = require('../run.cjs');
 const put = (data, values) => { for (const [method, offset, value] of values) data[method](value, offset); return data; };
 function elf64(main = true, mainName = 'main') {
   const data = Buffer.alloc(0x500); Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]).copy(data);
@@ -81,6 +82,9 @@ test('run commands, webview navigation and generated-code highlighting stay vali
     { command: 'ziran', args: ['bundle', '--root', '/notes', '--module-path', '/std', '--entry', 'hello:main', '-o', '/tmp/hello.zx', '/notes/hello.zi'] },
     { command: 'ziran', args: ['run', '/tmp/hello.zx'] },
   ]);
+  // A project bundle runs on the pinned toolchain that wrote it.
+  assert.deepEqual(runSteps('ziran', '/app/src/hello.zi', [], '/tmp/hello.zx', true)[1],
+    { command: 'ziran', args: ['run', '--project', '/tmp/hello.zx'] });
   const hex = {}; vm.runInNewContext(`${HEX_VIEW_SOURCE}\nthis.hexWindow = hexWindow;`, hex);
   assert.equal(hex.hexWindow(0x1040, false).start, 0x1040);
   const revealed = hex.hexWindow(0x1040, false, 0x40);
@@ -98,4 +102,13 @@ test('run commands, webview navigation and generated-code highlighting stay vali
   assert.match(syntax.highlight('def main():  # start\n return "x"', 'py'), /tok-comment"># start/);
   assert.equal(syntax.highlight('<b>', ''), '&lt;b&gt;');
   assert.deepEqual(['src/main.rs', 'out/__init__.py', 'hello.hpp'].map(syntax.languageOf), ['rust', 'py', 'cpp']);
+});
+
+test('ZIR version failures identify the selected compiler tools', () => {
+  const message = versionMismatchProblem('unsupported ZIR version 64\ninvalid embedded ZIR',
+    '/checkout/build/bin/ziran', '/home/wao/.local/bin/zi2zx');
+  assert.match(message, /unsupported ZIR version 64/);
+  assert.match(message, /Toolchain paths:\n  ziran: \/checkout\/build\/bin\/ziran\n  zi2zx: \/home\/wao\/\.local\/bin\/zi2zx$/);
+  assert.equal(versionMismatchProblem('syntax error', '/ziran', '/zi2zx'), 'syntax error');
+  assert.match(versionMismatchProblem('invalid embedded ZIR', '/ziran', null), /zi2zx: not found$/);
 });

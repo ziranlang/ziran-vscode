@@ -2,11 +2,15 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createHash, randomBytes } = require('node:crypto');
-const { projectRoot, runCommand, safeEnvironment } = require('./preview.cjs');
+const { isKryonProgram, previewLocation, projectRoot, runCommand, safeEnvironment } = require('./preview.cjs');
 const { TARGETS, buildTarget, bundleArgs, enabledTargets, importingPrograms, irArgs, mainLine,
-  modulePaths, noMainMessage, packageRoot, ziranCommand } = require('./targets.cjs');
+  modulePaths, noMainMessage, packageRoot, ziranCommand, ziranTool } = require('./targets.cjs');
 
 const RUN_TIMEOUT_MS = 10000;
+// The portable runtime has no window host, so a kryon/app program is not run
+// there: App.Run would only return its failure status.
+const KRYON_PROGRAM_NOTICE = 'This Kryon program opens its own window. Run it with ▶ to see it live ' +
+  'in the Kryon preview, or use Open in New Window there. The targets below show its generated code.';
 // The most one hex view request reads from a binary.
 const HEX_REQUEST_LIMIT = 1024 * 1024;
 
@@ -267,10 +271,31 @@ function hexWindow(codeStart, showFullFile, gotoOffset) {
 `;
 
 // `ziran bundle --root . --entry hello:main -o hello.zx hello.zi`, then
-// `ziran run hello.zx`: the file's main on the portable runtime.
+// `ziran run hello.zx`: the file's main on the portable runtime. A project
+// bundle is written by the project's pinned toolchain, such as a
+// ziran.local.toml checkout, so `run --project` reads it with that same
+// toolchain instead of whichever one the launcher belongs to.
 function runSteps(command, file, paths, bundle, project = false) {
   return [{ command, args: bundleArgs(file, paths, bundle, project) },
-    { command, args: ['run', bundle] }];
+    { command, args: project ? ['run', '--project', bundle] : ['run', bundle] }];
+}
+
+function versionMismatchProblem(message, ziran, zi2zx) {
+  if (!/(?:unsupported ZIR version|invalid embedded ZIR)/i.test(message)) return message;
+  return `${message}\n\nToolchain paths:\n  ziran: ${ziran}\n  zi2zx: ${zi2zx || 'not found'}`;
+}
+
+async function commandPath(command, cwd, environment = process.env) {
+  if (path.isAbsolute(command)) return command;
+  if (command.includes('/') || command.includes('\\')) return path.resolve(cwd, command);
+  for (const directory of (environment.PATH || '').split(path.delimiter)) {
+    if (!directory) continue;
+    const candidate = path.join(directory, command);
+    try {
+      if ((await fs.stat(candidate)).isFile()) return candidate;
+    } catch {}
+  }
+  return command;
 }
 
 function execute(command, args, cwd, timeout) {
@@ -800,10 +825,15 @@ class RunPreview {
     return results;
   }
 
-  async runProgram(command, paths) {
+  async runProgram(command, paths, folders) {
     if (!this.state.hasMain) {
       Object.assign(this.state, { output: '', problems: '', time: '', failed: false,
         status: 'No main to run' });
+      return;
+    }
+    if (await isKryonProgram(this.file)) {
+      Object.assign(this.state, { output: '', problems: '', time: '', failed: false,
+        hasMain: false, noMain: KRYON_PROGRAM_NOTICE, status: 'Runs in the Kryon preview' });
       return;
     }
     const bundle = path.join(this.workDirectory, 'program.zx');
@@ -814,9 +844,15 @@ class RunPreview {
     const built = await execute(bundleStep.command, bundleStep.args, cwd,
       RUN_TIMEOUT_MS);
     if (built.code !== 0) {
+      let problem = (built.stderr || built.stdout).trim() ||
+        (built.code === null ? `Could not start ${command}` : `ziran bundle exited with ${built.code}`);
+      if (/(?:unsupported ZIR version|invalid embedded ZIR)/i.test(problem)) {
+        const resolved = await commandPath(command, cwd);
+        const zi2zx = await ziranTool(resolved, 'zi2zx', this.file, folders);
+        problem = versionMismatchProblem(problem, resolved, zi2zx);
+      }
       Object.assign(this.state, { output: '', time: '', failed: true,
-        problems: (built.stderr || built.stdout).trim() ||
-          (built.code === null ? `Could not start ${command}` : `ziran bundle exited with ${built.code}`),
+        problems: problem,
         status: 'Build failed' });
       return;
     }
@@ -875,7 +911,7 @@ class RunPreview {
       const noMain = hasMain ? '' : noMainMessage(this.file, await importingPrograms(this.file));
       Object.assign(this.state, { hasMain, noMain });
       const folders = (this.vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath);
-      const program = this.runProgram(command, paths).then(() => {
+      const program = this.runProgram(command, paths, folders).then(() => {
         this.state.running = false;
         this.post();
       });
@@ -904,6 +940,17 @@ function activateRun(context, vscode) {
   let pane = null;
   const isZiran = (document) => document?.uri.scheme === 'file' &&
     document.uri.fsPath.endsWith('.zi');
+  const openPane = (file) => {
+    if (pane) {
+      pane.retarget(file);
+      pane.reveal();
+      pane.schedule();
+      return;
+    }
+    pane = new RunPreview(file, context, vscode);
+    const opened = pane;
+    pane.panel.onDidDispose(() => { if (pane === opened) pane = null; });
+  };
   context.subscriptions.push(
     vscode.commands.registerCommand('ziran.run', async (uri) => {
       const document = uri ? await vscode.workspace.openTextDocument(uri) :
@@ -914,15 +961,23 @@ function activateRun(context, vscode) {
       }
       if (document.isDirty) await document.save();
       const file = document.uri.fsPath;
-      if (pane) {
-        pane.retarget(file);
-        pane.reveal();
-        pane.schedule();
+      // A Kryon program or project runs live in the Kryon preview.
+      if (await previewLocation(file)) {
+        await vscode.commands.executeCommand('kryon.preview', document.uri);
         return;
       }
-      pane = new RunPreview(file, context, vscode);
-      const opened = pane;
-      pane.panel.onDidDispose(() => { if (pane === opened) pane = null; });
+      openPane(file);
+    }),
+    // The Run pane's target inspection for any file, Kryon programs included.
+    vscode.commands.registerCommand('ziran.inspect', async (uri) => {
+      const document = uri ? await vscode.workspace.openTextDocument(uri) :
+        vscode.window.activeTextEditor?.document;
+      if (!document || !document.uri.fsPath.endsWith('.zi')) {
+        vscode.window.showErrorMessage('Open a .zi file to inspect its targets.');
+        return;
+      }
+      if (document.isDirty) await document.save();
+      openPane(document.uri.fsPath);
     }),
     vscode.window.onDidChangeActiveTextEditor((editor) => {
       if (pane && isZiran(editor?.document)) pane.retarget(editor.document.uri.fsPath);
@@ -939,5 +994,6 @@ function activateRun(context, vscode) {
   );
 }
 
-module.exports = { HEX_VIEW_SOURCE, HIGHLIGHT_SOURCE, activateRun, binaryContentStart,
-  elfCodeStart, execute, irArgs, mainLine, runHtml, runSteps, wasmCodeStart, workDirectoryFor, zxInstructionStart };
+module.exports = { HEX_VIEW_SOURCE, HIGHLIGHT_SOURCE, KRYON_PROGRAM_NOTICE, activateRun, binaryContentStart,
+  commandPath, elfCodeStart, execute, irArgs, mainLine, runHtml, runSteps,
+  versionMismatchProblem, wasmCodeStart, workDirectoryFor, zxInstructionStart };
