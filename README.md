@@ -41,6 +41,10 @@ from ZX). The Optimized view
 shows the verified instructions read back from ZX and the source optimization
 report. Assembly is an `objdump` of the final ELF, not generated C or Go. The
 Binary view's hex starts at `main`; its ELF header toggle still reveals the whole file.
+`zi2zx` writes the LIR, the optimization report and `final.zx`, and lists the
+verified ZX; `zx2native` lowers `final.zx` to the native map and ELF. Each is
+found beside the `ziran` command or in a Ziran checkout (build them with
+`make`), and a missing one is named.
 C and Go also produce binaries, but are separate generated-code routes.
 There is one Native checkbox: ZX is a portable instruction stage within it, not
 a second target. Native is enabled by default; an older `previewTargets` entry
@@ -117,15 +121,14 @@ print that result, `1`, as the program's value. It is `main`'s return value,
 not output, and in a C-generated executable the same integer is the process
 exit status. **Inspect Targets**, in the preview and the editor title bar,
 opens the Run pane for the file anyway, with a note in place of the output and
-the usual C, Go, WebAssembly and Native views of its generated code.
+the same C, Go, ZIR, WebAssembly and Native tabs as any other `.zi` file.
 
-**Open in New Window** builds the C-generated executable with
-`ziran build --target=c --exe` and starts it, so the program opens its real
-operating-system window. The preview owns that process: opening again
-replaces it, and closing the preview or VS Code ends it. The window's stdout,
-stderr and exit status appear separately under **New window**. This is the
-C-generated binary; the Native view stays the direct ZX-to-machine-code route,
-which has no window services yet.
+Those tabs show the program's own code first: for `window.zi`, the Source view
+opens `window.c`, not the Kryon modules the build also writes. Every other
+generated file, such as Kryon, the standard library and runtime support, is
+listed under **Dependencies** and is read, compiled to assembly or inspected
+only when you pick it. A target that cannot build the program shows a one-line
+reason, with the tool's full output collapsed under it.
 
 ## Browse checked modules
 
@@ -185,9 +188,9 @@ Maintained example sources are never edited.
 
 Set `ZIRAN_PREVIEW_WINDOW=1` and `ZIRAN_RUN_TEST=1` with `ZIRAN_PREVIEW_PROJECT`
 at a Kryon checkout and `ZIRAN_PREVIEW_ENTRY=examples/window.zi` to test a Kryon
-program: Run must open the live embedded canvas, and Open in New Window must
-map exactly one real window on the private display, replace it when reopened,
-and end it with VS Code.
+program: Run must open the live embedded canvas, and Inspect Targets must show
+the C, Go, ZIR, WebAssembly and Native tabs with `window.c` first and the Kryon
+modules under Dependencies.
 
 For generated-code Preview on an existing source file, use
 `ZIRAN_PREVIEW_PROJECT=/path/to/package ZIRAN_PREVIEW_ENTRY=relative/file.zi npm run test:run`.

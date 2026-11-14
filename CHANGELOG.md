@@ -2,10 +2,13 @@
 
 ## Unreleased
 
+- Show only the program's own code in the Run pane's generated views. For Kryon's 6-line `examples/window.zi`, C Source opens `window.c` (546 bytes with `window.h`) instead of the 139 C files (832 KB) the build writes for the Kryon desktop host. Every other module is listed under **Dependencies** and is read, compiled to assembly or inspected only when picked. The same applies to Go, ZIR and Native's ZIR view.
+- Remove the Kryon preview's new-window feature and its raw Kryon-profile **Generated C** and **ZIR (inspected)** dumps. The preview is the embedded live window; **Inspect Targets** opens the same C, Go, ZIR, WebAssembly and Native tabs as any `.zi` file.
+- Show a failed target as one line, with the tool's full output collapsed under it.
+- Run Native through Ziran's renamed tools: `zi2zx` writes LIR, the optimization report and `final.zx`, `zx2native` writes the map and ELF, and a missing tool is named. A toolchain that still has only `zi2asm` keeps working until the rename lands everywhere.
 - Show every enabled target's tab in the Run pane as soon as a run starts. A tab still shows its last output, marked as building, and each fills in when its own build finishes instead of all of them waiting for the slowest (C, Go, WebAssembly and Native build in parallel; Native's ELF stage took the longest).
 - Run a Kryon program, a `.zi` file that imports `kryon/app` and declares `main`, as a live embedded preview instead of the portable Run pane, which could only print `main`'s failure status `1`. The preview builds the file through the Kryon tool's canvas profile in an extension-owned project.
 - Add **Inspect Targets** (`Ziran: Inspect Targets`) to open the Run pane's C, Go, WebAssembly and Native views for a Kryon program; the pane shows a note instead of running the program on the portable runtime.
-- Add **Open in New Window** to the Kryon preview: it builds the C-generated executable and runs it as one owned process that opens the program's real window, shows its stdout, stderr and exit status separately, replaces it when reopened, and ends it when the preview or VS Code closes.
 - Run a project's bundle with `ziran run --project`, so the toolchain that wrote the bundle also reads it, and name the `ziran` and `zi2zx` paths when a run fails on a ZIR version mismatch.
 - Name the Native stages Source, ZIR, LIR, Optimized, ZX, Assembly and Binary. ZIR is always type-checked, so the "Checked" prefix is gone, and Binary matches C, Go and WebAssembly; it still shows the ELF lowered from ZX with its ELF header toggle.
 - Inspect Native through ZIR, LIR and linked portable ZX before direct ELF lowering. Show each stage, use the current ZX CLI, recognize qualified Ziran main symbols, and retain main-first binary navigation. Keep temporary builds in extension-owned storage and verify no-libc console output with the real package toolchain.

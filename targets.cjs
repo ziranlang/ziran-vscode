@@ -60,7 +60,7 @@ async function ziranCommand(file, vscode) {
   return await exists(local) ? local : 'ziran';
 }
 
-// Another tool of the Ziran toolchain behind COMMAND, such as zi2asm: beside
+// Another tool of the Ziran toolchain behind COMMAND, such as zi2zx: beside
 // the command, in a checkout above the file, in the toolchain a project pins,
 // or in a checkout beside an open folder.
 async function ziranTool(command, name, file, folders = []) {
@@ -249,6 +249,39 @@ function moduleName(file) {
   return path.basename(file, '.zi');
 }
 
+// The program's own modules: the file's module and the .zi modules beside it.
+// Everything else a build writes, such as Kryon, std and runtime support, is
+// a dependency: listed, but loaded and shown only on request.
+async function ownModules(file) {
+  const names = new Set([moduleName(file)]);
+  try {
+    for (const entry of await fs.readdir(path.dirname(file))) {
+      if (entry.endsWith('.zi')) names.add(entry.slice(0, -3));
+    }
+  } catch {}
+  return names;
+}
+
+function ownFile(name, own) {
+  return own.has(path.basename(name).replace(/\..*$/, ''));
+}
+
+// Own files first, the entry module's before its siblings; then dependencies.
+// A build whose files match no own module shows them all as its own.
+function splitOwn(entries, file, own, nameOf = (entry) => entry.name) {
+  const mine = entries.filter((entry) => ownFile(nameOf(entry), own));
+  if (!mine.length) return { mine: entries, dependencies: [] };
+  const entry = moduleName(file);
+  const first = (item) => path.basename(nameOf(item)).replace(/\..*$/, '') === entry ? 0 : 1;
+  mine.sort((left, right) => first(left) - first(right));
+  return { mine, dependencies: entries.filter((item) => !mine.includes(item)) };
+}
+
+// A dependency file: its name, and LOAD, which reads its text on request.
+function dependencyFile(name, load, size) {
+  return { name, dependency: true, ...(Number.isSafeInteger(size) ? { size } : {}), load };
+}
+
 // The line of the file's `main :: (` declaration, or -1. A program runs only
 // through its main; a file without one is a module for programs to import.
 function mainLine(source) {
@@ -361,11 +394,20 @@ async function isBinary(file) {
 }
 
 // Text files a build wrote; executables and objects belong to the hex view.
-async function textFiles(directory) {
-  const files = [];
+// With the program's FILE, only its own modules are read now; dependency
+// files are read when the view asks for them.
+async function textFiles(directory, file = '') {
+  const names = [];
   for (const name of await listFiles(directory)) {
-    const file = path.join(directory, name);
-    if (!(await isBinary(file))) files.push({ name, text: await readText(file) });
+    if (!(await isBinary(path.join(directory, name)))) names.push(name);
+  }
+  const { mine, dependencies } = file ? splitOwn(names, file, await ownModules(file), (name) => name) :
+    { mine: names, dependencies: [] };
+  const files = [];
+  for (const name of mine) files.push({ name, text: await readText(path.join(directory, name)) });
+  for (const name of dependencies) {
+    const full = path.join(directory, name);
+    files.push(dependencyFile(name, () => readText(full), (await fs.stat(full)).size));
   }
   return files;
 }
@@ -460,16 +502,19 @@ async function cAssembly(context) {
   const sources = entries.filter((entry) => /\.c$/.test(entry.file || ''))
     .sort((left, right) => rank(path.basename(left.file)) - rank(path.basename(right.file)) ||
       left.file.localeCompare(right.file));
-  const files = await mapLimit(sources, 4, async (entry) => {
-    const name = path.relative(output, path.resolve(entry.directory || cwd, entry.file)).replace(/\.c$/, '.s');
-    const assembly = path.join(directory, name);
+  const nameOf = (entry) => path.relative(output, path.resolve(entry.directory || cwd, entry.file)).replace(/\.c$/, '.s');
+  const compile = async (entry) => {
+    const assembly = path.join(directory, nameOf(entry));
     await fs.mkdir(path.dirname(assembly), { recursive: true });
     const list = Array.isArray(entry.arguments) ? entry.arguments : String(entry.command || '').split(/\s+/);
     const [compilerCommand, ...args] = assemblyArguments(list, assembly);
     const result = await runCommand(compilerCommand, args, entry.directory || cwd);
-    return result.code === 0 ? { name, text: await readText(assembly) } :
-      { name, text: `${compilerCommand} failed:\n${problem(result, compilerCommand)}\n` };
-  });
+    return result.code === 0 ? readText(assembly) :
+      `${compilerCommand} failed:\n${problem(result, compilerCommand)}\n`;
+  };
+  const { mine, dependencies } = splitOwn(sources, context.file, await ownModules(context.file), nameOf);
+  const files = await mapLimit(mine, 4, async (entry) => ({ name: nameOf(entry), text: await compile(entry) }));
+  for (const entry of dependencies) files.push(dependencyFile(nameOf(entry), () => compile(entry)));
   return view('assembly', 'Assembly', files, `${compiler} -S, with the flags ziran compile-commands reports`);
 }
 
@@ -482,7 +527,7 @@ async function buildC(context) {
     const built = await runCommand(command, buildArgs('c', file, output, paths, project), cwd);
     if (built.code !== 0) return { ok: false, message: problem(built, 'ziran build'), views: [] };
   }
-  const views = [view('source', 'Source', await textFiles(output)), await cAssembly(context)];
+  const views = [view('source', 'Source', await textFiles(output, file)), await cAssembly(context)];
   const program = path.join(output, moduleName(file));
   if (exe?.code === 0 && await exists(program)) {
     views.push(view('binary', 'Binary', [await binaryFile(program)], `${cCompiler()} executable`));
@@ -497,7 +542,7 @@ async function buildGo(context) {
   const name = moduleName(file);
   const built = await runCommand(command, buildArgs('go', file, output, paths, project, { exe: hasMain }), cwd);
   if (built.code !== 0) return { ok: false, message: problem(built, 'ziran build'), views: [] };
-  const views = [view('source', 'Source', await textFiles(output))];
+  const views = [view('source', 'Source', await textFiles(output, file))];
   if (!(await exists(path.join(output, 'go.mod')))) {
     await fs.writeFile(path.join(output, 'go.mod'), 'module ziranrun\n\ngo 1.21\n');
   }
@@ -559,46 +604,71 @@ async function checkedProgram(context, directory) {
   return { entry, input };
 }
 
-async function zi2asmStep(zi2asm, stage, args, cwd) {
-  const result = await runCommand(zi2asm, args, cwd);
-  if (result.code !== 0) throw new Error(`${stage}: ${problem(result, 'zi2asm')}`);
+async function toolStep(tool, label, stage, args, cwd) {
+  const result = await runCommand(tool, args, cwd);
+  if (result.code !== 0) throw new Error(`${stage}: ${problem(result, label)}`);
+}
+
+// The direct-assembly tools: zi2zx lowers checked ZIR to LIR and linked ZX
+// and lists verified ZX; zx2native lowers ZX to its map and ELF. Each is
+// found on its own. Until Ziran's rename lands everywhere, a toolchain that
+// still has only zi2asm runs every stage through it.
+async function nativeTools(command, file, folders) {
+  const zx2native = await ziranTool(command, 'zx2native', file, folders);
+  // One checkout's tools agree on the ZX revision; prefer zi2zx beside zx2native.
+  const beside = zx2native && path.join(path.dirname(zx2native), 'zi2zx');
+  const zi2zx = beside && await executable(beside) ? beside : await ziranTool(command, 'zi2zx', file, folders);
+  if (zi2zx && zx2native) {
+    return { lower: { tool: zi2zx, label: 'zi2zx' }, native: { tool: zx2native, label: 'zx2native' }, zxInput: [] };
+  }
+  const zi2asm = await ziranTool(command, 'zi2asm', file, folders);
+  if (zi2asm) {
+    const tool = { tool: zi2asm, label: 'zi2asm' };
+    return { lower: tool, native: tool, zxInput: ['--input', 'zx'] };
+  }
+  const missing = [zi2zx ? '' : 'zi2zx', zx2native ? '' : 'zx2native'].filter(Boolean).join(' and ');
+  return { missing: `${missing} ${missing.includes(' and ') ? 'were' : 'was'} not found beside the ziran command or in a Ziran checkout; build ${missing.includes(' and ') ? 'them' : 'it'} there with \`make\`.` };
 }
 
 // Ziran's direct-assembly inspection pipeline (ASSEMBLY/vscode-inspection.md):
-// source -> checked .zir -> LIR -> linked portable ZX -> direct ELF -> objdump.
+// source -> checked .zir -> LIR -> linked ZX -> direct ELF -> objdump.
 async function buildNative(context) {
   const { command, file, output, hasMain, noMain } = context;
   if (!hasMain) return { ok: false, message: noMain, views: [] };
-  const zi2asm = await ziranTool(command, 'zi2asm', file, context.folders);
-  if (!zi2asm) {
-    return { ok: false, message: 'zi2asm was not found beside the ziran command or in a Ziran checkout; build it there with `make assembly`.', views: [] };
-  }
+  const tools = await nativeTools(command, file, context.folders);
+  if (tools.missing) return { ok: false, message: tools.missing, views: [] };
   try {
     const { entry, input } = await checkedProgram(context, path.join(output, 'checked'));
     const at = (name) => path.join(output, name);
-    const checkedFiles = [];
     const names = (await listFiles(path.dirname(input))).filter(name => name.endsWith('.zir'));
-    names.sort((left, right) => (right === path.basename(input)) - (left === path.basename(input)));
-    for (const name of names) {
+    const inspect = async (name) => {
       const listing = at(`${name}.txt`);
       const inspected = await runToFile(command, ['inspect', path.join(path.dirname(input), name)],
         context.cwd, listing);
       if (inspected.code !== 0) throw new Error(`ZIR listing: ${problem(inspected, 'ziran inspect')}`);
-      checkedFiles.push({ name, text: await readText(listing) });
+      return readText(listing);
+    };
+    const { mine, dependencies } = splitOwn(names, file, await ownModules(file), (name) => name);
+    const checkedFiles = [];
+    for (const name of mine) checkedFiles.push({ name, text: await inspect(name) });
+    for (const name of dependencies) {
+      checkedFiles.push(dependencyFile(name, () => inspect(name).catch((error) => error.message)));
     }
     const checked = ['--root', path.dirname(input), '--entry', entry];
-    const zx = at('portable.zx');
-    await zi2asmStep(zi2asm, 'lowered instruction listing', [...checked,
+    const zx = at('final.zx');
+    const { lower, native, zxInput } = tools;
+    await toolStep(lower.tool, lower.label, 'lowered instruction listing', [...checked,
       '--emit', 'lir', '-o', at('lowered.lir'), input], output);
-    await zi2asmStep(zi2asm, 'optimization counters', [...checked, '--opt',
+    await toolStep(lower.tool, lower.label, 'optimization counters', [...checked, '--opt',
       '--emit', 'opt-report', '-o', at('optimization.json'), input], output);
-    await zi2asmStep(zi2asm, 'linked portable ZX instructions', [...checked,
+    await toolStep(lower.tool, lower.label, 'linked ZX instructions', [...checked,
       '--emit', 'zx', '-o', zx, input], output);
-    for (const [stage, args] of [
-      ['verified ZX instruction listing', ['--emit', 'lir', '-o', at('optimized.lir')]],
-      ['final native map', ['--emit', 'map', '-o', at('final.map.json')]],
-      ['final ELF', ['--emit', 'elf', '-o', at('final.elf')]],
-    ]) await zi2asmStep(zi2asm, stage, ['--input', 'zx', ...args, zx], output);
+    await toolStep(lower.tool, lower.label, 'verified ZX instruction listing',
+      [...zxInput, '--emit', 'lir', '-o', at('optimized.lir'), zx], output);
+    await toolStep(native.tool, native.label, 'final native map',
+      [...zxInput, '--emit', 'map', '-o', at('final.map.json'), zx], output);
+    await toolStep(native.tool, native.label, 'final ELF',
+      [...zxInput, '--emit', 'elf', '-o', at('final.elf'), zx], output);
     const map = JSON.parse(await fs.readFile(at('final.map.json'), 'utf8'));
     const address = map.image?.text_virtual_address;
     if (!Number.isInteger(address) || address < 0) throw new Error('final native map: image.text_virtual_address is missing');
@@ -617,9 +687,9 @@ async function buildNative(context) {
       view('optimized', 'Optimized', [
         { name: 'optimized.lir', text: await readText(at('optimized.lir')) },
         { name: 'optimization.json', text: await readText(at('optimization.json')) }],
-        'Verified instructions read from portable.zx; optimization runs before ZX is written'),
+        'Verified instructions read from final.zx; optimization runs before ZX is written'),
       view('zx', 'ZX', [await binaryFile(zx)],
-        'Linked portable revision-28 instructions, used directly for target lowering'),
+        'Linked ZX instructions, used directly for target lowering'),
       view('disassembly', 'Assembly', [{ name: 'final.disasm', text: disassembly }],
         'objdump of the ELF lowered directly from verified ZX; no generated C or Go'),
       view('binary', 'Binary', [await binaryFile(at('final.elf'))],
@@ -635,7 +705,7 @@ async function buildSource(context, target) {
   const { command, file, output, paths, project, cwd } = context;
   const built = await runCommand(command, buildArgs(target, file, output, paths, project), cwd);
   if (built.code !== 0) return { ok: false, message: problem(built, 'ziran build'), views: [] };
-  return { ok: true, message: '', views: [view('source', 'Source', await textFiles(output))] };
+  return { ok: true, message: '', views: [view('source', 'Source', await textFiles(output, file))] };
 }
 
 const BUILDERS = { c: buildC, go: buildGo, wasm: buildWasm, native: buildNative };
@@ -666,4 +736,5 @@ async function buildTarget(command, target, file, workDirectory, paths, options 
 module.exports = {
   DEFAULT_TARGETS, TARGETS, assemblyArguments, buildArgs, buildTarget, bundleArgs, cCompiler,
   commandStd, enabledTargets, importedPackages, importingPrograms, irArgs, listFiles, mainLine,
-  modulePaths, noMainMessage, packageModulePaths, packageRoot, sourceArgs, ziranCommand, ziranTool };
+  modulePaths, noMainMessage, ownModules, packageModulePaths, packageRoot, sourceArgs, splitOwn,
+  ziranCommand, ziranTool };

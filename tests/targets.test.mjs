@@ -7,8 +7,9 @@ import { createRequire } from 'node:module';
 import { test } from 'node:test';
 const require = createRequire(import.meta.url);
 const { DEFAULT_TARGETS, TARGETS, assemblyArguments, buildArgs, buildTarget, commandStd, enabledTargets, importingPrograms,
-  noMainMessage, ziranCommand } = require('../targets.cjs');
+  noMainMessage, ownModules, splitOwn, ziranCommand } = require('../targets.cjs');
 const compiler = path.resolve('../ziran/build/bin/ziran');
+const nativeTools = ['zi2zx', 'zx2native'].every(tool => existsSync(path.resolve('../ziran/build/bin', tool)));
 const view = (result, id) => {
   const found = result.views.find(item => item.id === id);
   assert.equal(found?.ok, true, `${result.id} ${id}: ${found?.message}`); return found;
@@ -105,7 +106,7 @@ test('real package builds expose each target, portable execution, IR and module 
     assert.deepEqual(await magic(view(results.go, 'binary').files[0]), [0x7f, 0x45, 0x4c, 0x46]);
     assert.match(view(results.wasm, 'text').files[0].text, /\(module/);
     assert.deepEqual(await magic(view(results.wasm, 'binary').files[0]), [0, 0x61, 0x73, 0x6d]);
-    if (existsSync(path.resolve('../ziran/build/bin/zi2asm'))) {
+    if (nativeTools) {
       const native = await buildTarget(compiler, 'native', source, work, []);
       assert.equal(native.ok, true, native.message);
       assert.deepEqual(native.views.map(item => item.id),
@@ -116,7 +117,7 @@ test('real package builds expose each target, portable execution, IR and module 
       assert.deepEqual(await magic(binary), [0x7f, 0x45, 0x4c, 0x46]);
       const { binaryContentStart } = require('../run.cjs');
       assert.match(binaryContentStart(await fs.readFile(binary.binary.path)).label, /^hello:main at /);
-      assert.equal(view(native, 'zx').files[0].name, 'portable.zx');
+      assert.equal(view(native, 'zx').files[0].name, 'final.zx');
       const headers = await runCommand('readelf', ['-lW', binary.binary.path], directory);
       assert.equal(headers.code, 0, headers.stderr);
       assert.doesNotMatch(headers.stdout, /INTERP|DYNAMIC/);
@@ -135,7 +136,7 @@ test('real package builds expose each target, portable execution, IR and module 
       assert.equal(result.code, 0, result.stderr); if (index === 1) assert.equal(result.stdout, 'Package roots!\n');
     }
     await fs.writeFile(source, 'Add :: (a:s32,b:s32)->s32{return a+b}\nmain :: ()->s32{return Add(40,2)}\n');
-    if (existsSync(path.resolve('../ziran/build/bin/zi2asm'))) {
+    if (nativeTools) {
       const native = await buildTarget(compiler, 'native', source, work, []);
       assert.match(view(native, 'lowered').files[0].text, /^lir \d+ entry/);
       assert.match(view(native, 'disassembly').files[0].text, /# command: objdump -d final\.elf[\s\S]*<hello:main>:/);
@@ -151,4 +152,89 @@ test('real package builds expose each target, portable execution, IR and module 
       assert.equal(result.views.find(item => item.id === 'binary').message, expected);
     }
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('generated views show the program\'s own modules and load dependencies on request', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ziran-own-'));
+  try {
+    const file = path.join(directory, 'window.zi'); const command = path.join(directory, 'fake-ziran');
+    await fs.writeFile(file, 'main :: () -> s32 { return 0 }\n');
+    await fs.writeFile(path.join(directory, 'helper.zi'), 'Helper :: 1\n');
+    assert.deepEqual([...await ownModules(file)].sort(), ['helper', 'window']);
+    // Like a Kryon build: the program's module among every package module.
+    await fs.writeFile(command, `#!/bin/sh
+while [ $# -gt 0 ]; do case "$1" in -o) shift; output=$1;; esac; shift; done
+mkdir -p "$output"; for name in app app_types accessibility_linux helper window; do
+  echo "/* $name */" > "$output/$name.py"; done; echo runtime > "$output/zir_runtime.h"
+`, { mode: 0o755 });
+    const built = await buildTarget(command, 'py', file, path.join(directory, 'work'), []);
+    const files = built.views[0].files;
+    assert.deepEqual(files.filter(item => !item.dependency).map(item => item.name), ['window.py', 'helper.py']);
+    assert.equal(files[0].text, '/* window */\n');
+    const dependencies = files.filter(item => item.dependency);
+    assert.deepEqual(dependencies.map(item => item.name).sort(),
+      ['accessibility_linux.py', 'app.py', 'app_types.py', 'zir_runtime.h']);
+    for (const item of dependencies) {
+      assert.equal(item.text, undefined, `${item.name} is not read until it is shown`);
+      assert.equal(typeof item.load, 'function');
+      assert.ok(item.size > 0);
+    }
+    assert.equal(await dependencies.find(item => item.name === 'app.py').load(), '/* app */\n');
+    // A build with no file of its own shows everything as its own.
+    assert.deepEqual(splitOwn([{ name: 'other.c' }], file, new Set(['window'])).dependencies, []);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+test('Native names the missing renamed tool instead of zi2asm', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ziran-tools-'));
+  try {
+    const bin = path.join(directory, 'build/bin'); await fs.mkdir(bin, { recursive: true });
+    const command = path.join(bin, 'ziran');
+    await fs.writeFile(command, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    await fs.writeFile(path.join(bin, 'zi2zx'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const file = path.join(directory, 'hello.zi');
+    await fs.writeFile(file, 'main :: () { }\n');
+    const result = await buildTarget(command, 'native', file, path.join(directory, 'work'), []);
+    assert.equal(result.ok, false);
+    if (!existsSync(path.join(os.homedir(), '.local/bin/zx2native'))) {
+      assert.equal(result.message, 'zx2native was not found beside the ziran command or in a Ziran checkout; build it there with `make`.');
+    }
+    assert.doesNotMatch(result.message, /zi2asm/);
+    assert.equal(result.message.includes('\n'), false);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+const kryonWindow = path.resolve('../../kryonlabs/kryon/examples/window.zi');
+test('a Kryon program gets the C, Go, Wasm and Native tabs with only its own code shown',
+  { skip: !existsSync(kryonWindow) || !existsSync(path.join(os.homedir(), '.local/bin/ziran')) }, async () => {
+  const vscode = { Uri: { file: fsPath => ({ fsPath }) }, workspace: {
+    workspaceFolders: [], getConfiguration: () => ({ get: (_, fallback) => fallback }) } };
+  const command = await ziranCommand(kryonWindow, vscode);
+  const work = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-kryon-'));
+  try {
+    const results = {};
+    for (const target of ['c', 'go', 'wasm', ...(nativeTools ? ['native'] : [])]) {
+      results[target] = await buildTarget(command, target, kryonWindow, work, [],
+        { folders: [path.resolve('..')] });
+      assert.equal(results[target].ok, true, `${target}: ${results[target].message}`);
+    }
+    for (const [target, own] of [['c', ['window.c', 'window.h']], ['go', ['window.go']]]) {
+      const files = view(results[target], 'source').files;
+      assert.deepEqual(files.filter(item => !item.dependency).map(item => item.name), own, target);
+      assert.match(files[0].text, /main/);
+      assert.ok(files.some(item => item.dependency && item.name.startsWith('app')), `${target} lists Kryon as dependencies`);
+      assert.ok(files.filter(item => item.dependency).every(item => item.text === undefined));
+      const ownBytes = files.filter(item => !item.dependency).reduce((sum, item) => sum + item.text.length, 0);
+      const dependencyBytes = files.filter(item => item.dependency).reduce((sum, item) => sum + (item.size || 0), 0);
+      console.log(`${target}: ${own.length} own files (${ownBytes} bytes), ${files.length - own.length} dependency files (${dependencyBytes} bytes)`);
+    }
+    const assembly = view(results.c, 'assembly').files;
+    assert.deepEqual(assembly.filter(item => !item.dependency).map(item => item.name), ['window.s']);
+    assert.ok(assembly.filter(item => item.dependency).every(item => typeof item.load === 'function'));
+    assert.match(view(results.wasm, 'text').files[0].text, /\(module/);
+    if (nativeTools) {
+      const checked = view(results.native, 'checked').files;
+      assert.equal(checked[0].name, 'window.zir');
+      assert.ok(checked.slice(1).every(item => item.dependency));
+      assert.deepEqual(await magic(view(results.native, 'binary').files[0]), [0x7f, 0x45, 0x4c, 0x46]);
+    }
+  } finally { await fs.rm(work, { recursive: true, force: true }); }
 });

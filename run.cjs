@@ -4,13 +4,13 @@ const { spawn } = require('node:child_process');
 const { createHash, randomBytes } = require('node:crypto');
 const { isKryonProgram, previewLocation, projectRoot, runCommand, safeEnvironment } = require('./preview.cjs');
 const { TARGETS, buildTarget, bundleArgs, enabledTargets, importingPrograms, irArgs, mainLine,
-  modulePaths, noMainMessage, packageRoot, ziranCommand, ziranTool } = require('./targets.cjs');
+  modulePaths, noMainMessage, ownModules, packageRoot, splitOwn, ziranCommand, ziranTool } = require('./targets.cjs');
 
 const RUN_TIMEOUT_MS = 10000;
 // The portable runtime has no window host, so a kryon/app program is not run
 // there: App.Run would only return its failure status.
 const KRYON_PROGRAM_NOTICE = 'This Kryon program opens its own window. Run it with ▶ to see it live ' +
-  'in the Kryon preview, or use Open in New Window there. The targets below show its generated code.';
+  'in the Kryon preview. The targets below show its generated code.';
 // The most one hex view request reads from a binary.
 const HEX_REQUEST_LIMIT = 1024 * 1024;
 
@@ -405,7 +405,9 @@ function runHtml(nonce) {
   .tab[aria-selected="true"] { border-bottom-color: var(--vscode-focusBorder); font-weight: bold; }
   .tab.failed { color: var(--vscode-errorForeground); }
   .tab.pending { opacity: .7; }
-  .file-row { margin-bottom: 8px; }
+  .file-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  #problem-details { margin-top: 8px; }
+  #problem-details summary { font-weight: normal; color: var(--vscode-descriptionForeground); }
   .file-row:empty { display: none; }
   .views:empty { display: none; }
   .views .tab { font-size: .9em; }
@@ -442,6 +444,7 @@ function runHtml(nonce) {
 <div class="file-row" id="file-row"></div>
 <div class="caption" id="caption"></div>
 <pre id="code"></pre>
+<details id="problem-details" hidden><summary>Full output</summary><pre id="problem-text"></pre></details>
 <div id="hex" hidden><div class="hex-bar"><span id="hex-title"></span><span id="hex-code"></span><label id="hex-headers-label" hidden><input id="hex-headers" type="checkbox"> <span id="hex-headers-text">Show full file</span></label><input id="hex-goto" type="text" placeholder="Go to offset (hex)" aria-label="Go to offset"></div>
 <div class="hex-scroll" id="hex-scroll" tabindex="0" role="region" aria-label="Hex view"><div id="hex-spacer"></div><pre id="hex-rows"></pre></div></div></details>
 <script nonce="${nonce}">
@@ -454,6 +457,9 @@ ${HEX_VIEW_SOURCE}
   let selected = saved.selected || '';
   const files = saved.files || {};
   const views = saved.views || {};
+  // Dependency files arrive from the extension when first shown.
+  const texts = new Map();
+  let textGeneration = -1;
   let showFullFile = saved.showFullFile === true;
   const remember = () => api.setState({ selected, files, views, showFullFile,
     codeOpen: byId('code-section').open });
@@ -585,11 +591,31 @@ ${HEX_VIEW_SOURCE}
     button.addEventListener('click', select);
     return button;
   };
+  // A failure reads as one line; the tool's full output stays collapsed.
   const showProblem = (message) => {
     hideHex();
+    const text = String(message || '').trim();
+    const lines = text.split('\\n');
     const code = byId('code');
     code.className = 'problems';
-    code.textContent = message;
+    code.textContent = lines[0];
+    byId('problem-text').textContent = lines.length > 1 ? text : '';
+    byId('problem-details').hidden = lines.length < 2;
+  };
+  const sizeText = (bytes) => bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + ' MB' :
+    bytes >= 1024 ? Math.round(bytes / 1024) + ' KB' : bytes + ' bytes';
+  const fileSelect = (id, label, first, items, value) => {
+    const select = document.createElement('select');
+    select.id = id;
+    select.setAttribute('aria-label', label);
+    for (const [optionValue, text] of [...(first ? [first] : []), ...items.map((file) => [file.name, file.name])]) {
+      const option = document.createElement('option');
+      option.value = optionValue;
+      option.textContent = text;
+      select.append(option);
+    }
+    select.value = value;
+    return select;
   };
   const renderCode = () => {
     const boxes = byId('targets');
@@ -609,7 +635,7 @@ ${HEX_VIEW_SOURCE}
     }
     const zir = { id: 'zir', label: 'ZIR', ok: !state.irError, message: state.irError,
       views: [{ id: 'checked', label: 'Checked', ok: true, caption: '',
-        files: state.irModules.map((module) => ({ name: module.name, text: module.text })) }] };
+        files: state.irModules }] };
     const native = (result) => result.id === 'c' || result.id === 'go';
     const results = [...state.results.filter(native), zir,
       ...state.results.filter((result) => !native(result))];
@@ -629,6 +655,7 @@ ${HEX_VIEW_SOURCE}
     byId('caption').textContent = '';
     const code = byId('code');
     code.className = '';
+    byId('problem-details').hidden = true;
     if (!result) {
       hideHex();
       code.textContent = state.enabled.length ? (state.codeRunning ? 'Generating…' : '') : 'Choose at least one target.';
@@ -656,24 +683,41 @@ ${HEX_VIEW_SOURCE}
     if (!current.ok) { showProblem(current.message); return; }
     byId('caption').textContent = current.caption || '';
     const fileKey = result.id + '/' + current.id;
-    if (current.files.length > 1) {
-      const select = document.createElement('select');
-      select.setAttribute('aria-label', 'Generated file');
-      for (const file of current.files) {
-        const option = document.createElement('option');
-        option.value = option.textContent = file.name;
-        select.append(option);
-      }
-      select.addEventListener('change', () => { files[fileKey] = select.value; remember(); renderCode(); });
+    // The program's own files are shown; dependencies open only on request.
+    const own = current.files.filter((file) => !file.dependency);
+    const dependencies = current.files.filter((file) => file.dependency);
+    const chosen = current.files.find((file) => file.name === files[fileKey]) || own[0] || current.files[0];
+    const choose = (select) => select.addEventListener('change', () => {
+      files[fileKey] = select.value; remember(); renderCode();
+    });
+    if (own.length > 1) {
+      const select = fileSelect('own-files', 'Generated file', null, own, chosen && !chosen.dependency ? chosen.name : '');
+      choose(select);
       row.append(select);
     }
-    const chosen = current.files.find((file) => file.name === files[fileKey]) || current.files[0];
-    if (row.firstChild && chosen) row.firstChild.value = chosen.name;
+    if (dependencies.length) {
+      const sized = dependencies.every((file) => Number.isSafeInteger(file.size));
+      const total = sized ? ' · ' + sizeText(dependencies.reduce((sum, file) => sum + file.size, 0)) : '';
+      const first = chosen && chosen.dependency ? ['', '← Own code'] :
+        ['', 'Dependencies (' + dependencies.length + (dependencies.length === 1 ? ' file' : ' files') + total + ')'];
+      const select = fileSelect('dependency-files', 'Dependency file', first, dependencies,
+        chosen && chosen.dependency ? chosen.name : '');
+      choose(select);
+      row.append(select);
+    }
     if (!chosen) { hideHex(); code.textContent = 'No files.'; return; }
     if (chosen.binary) { showHex(chosen); return; }
     hideHex();
-    code.innerHTML = chosen.text.length > 400000 ? escapeHtml(chosen.text) :
-      highlight(chosen.text, languageOf(chosen.name));
+    let text = chosen.text;
+    if (text === undefined && chosen.lazy) {
+      text = texts.get(chosen.lazy);
+      if (text === undefined) {
+        texts.set(chosen.lazy, null);
+        api.postMessage({ type: 'text', key: chosen.lazy });
+      }
+      if (typeof text !== 'string') { code.textContent = 'Loading ' + chosen.name + '…'; return; }
+    }
+    code.innerHTML = text.length > 400000 ? escapeHtml(text) : highlight(text, languageOf(chosen.name));
   };
   window.addEventListener('message', ({ data }) => {
     if (data.type === 'bytes') {
@@ -681,8 +725,14 @@ ${HEX_VIEW_SOURCE}
       if (hex && hex.key === data.key) renderHex();
       return;
     }
+    if (data.type === 'text') {
+      texts.set(data.key, data.text);
+      if (state) renderCode();
+      return;
+    }
     if (data.type !== 'state') return;
     state = data;
+    if (state.generation !== textGeneration) { textGeneration = state.generation; texts.clear(); }
     byId('window-title').textContent = state.title;
     byId('status').textContent = state.status;
     byId('status').className = state.failed ? 'failed' : '';
@@ -716,9 +766,10 @@ class RunPreview {
     this.state = { type: 'state', title: path.basename(file), status: 'Starting…',
       output: '', problems: '', time: '', failed: false, running: true, hasMain: true,
       noMain: '', targets: TARGETS, enabled: enabledTargets(file, vscode), results: [],
-      irModules: [], irError: '', codeRunning: true };
+      irModules: [], irError: '', codeRunning: true, generation: 0 };
     this.generation = 0;
     this.binaries = new Map();
+    this.texts = new Map();
     this.panel = vscode.window.createWebviewPanel('ziranRun',
       `Run: ${path.basename(file)}`, vscode.ViewColumn.Beside,
       { enableScripts: true, retainContextWhenHidden: true });
@@ -777,6 +828,7 @@ class RunPreview {
     if (message.type === 'ready') this.post();
     if (message.type === 'run') this.schedule();
     if (message.type === 'bytes') await this.sendBytes(message);
+    if (message.type === 'text') await this.sendText(message);
     if (message.type === 'targets' && Array.isArray(message.enabled)) {
       const enabled = TARGETS.map((target) => target.id)
         .filter((id) => message.enabled.includes(id));
@@ -810,16 +862,37 @@ class RunPreview {
     if (!this.disposed) this.panel.webview.postMessage({ type: 'bytes', key: message.key, offset, data });
   }
 
-  // Binaries stay on disk; the webview receives a key and size and asks for
-  // pages of bytes by key.
+  // A dependency file's text, read or generated when the view first shows it.
+  async sendText(message) {
+    const load = this.texts.get(message.key);
+    let text = 'This file belongs to an earlier build; it returns when the current build finishes.';
+    if (load) {
+      try { text = await load(); } catch (error) { text = error.message; }
+    }
+    if (!this.disposed) this.panel.webview.postMessage({ type: 'text', key: message.key, text: String(text) });
+  }
+
+  // Binaries stay on disk and dependency files load later; the webview
+  // receives a key and asks for pages of bytes or text by key.
   beginRegistration() {
     this.generation++;
+    this.state.generation = this.generation;
     this.binaries = new Map();
+    this.texts = new Map();
+  }
+
+  lazyFile(id, view, file) {
+    const { load, ...rest } = file;
+    const key = `${this.generation}:${id}:${view}:${file.name}`;
+    this.texts.set(key, load);
+    return { ...rest, lazy: key };
   }
 
   async registerResult(result) {
     for (const item of result.views || []) {
-      for (const file of item.files || []) {
+      item.files = (item.files || []).map((file) => typeof file.load === 'function' ?
+        this.lazyFile(result.id, item.id, file) : file);
+      for (const file of item.files) {
         if (!file.binary?.path) continue;
         const key = `${this.generation}:${result.id}:${item.id}:${file.name}`;
         this.binaries.set(key, file.binary.path);
@@ -890,13 +963,16 @@ class RunPreview {
     }
     let names = [];
     try { names = (await fs.readdir(output)).filter((name) => name.endsWith('.zir')).sort(); } catch {}
-    const own = `${path.basename(this.file, '.zi')}.zir`;
-    names.sort((left, right) => (right === own) - (left === own));
-    const modules = [];
-    for (const name of names) {
+    const inspect = async (name) => {
       const inspected = await runCommand(command, ['inspect', path.join(output, name)],
         path.dirname(this.file));
-      modules.push({ name, text: inspected.code === 0 ? inspected.stdout : inspected.stderr });
+      return inspected.code === 0 ? inspected.stdout : inspected.stderr;
+    };
+    const { mine, dependencies } = splitOwn(names, this.file, await ownModules(this.file), (name) => name);
+    const modules = [];
+    for (const name of mine) modules.push({ name, text: await inspect(name) });
+    for (const name of dependencies) {
+      modules.push(this.lazyFile('zir', 'checked', { name, dependency: true, load: () => inspect(name) }));
     }
     this.state.irModules = modules;
     this.state.irError = '';
@@ -1012,6 +1088,6 @@ function activateRun(context, vscode) {
   );
 }
 
-module.exports = { HEX_VIEW_SOURCE, HIGHLIGHT_SOURCE, KRYON_PROGRAM_NOTICE, activateRun, binaryContentStart,
-  commandPath, elfCodeStart, execute, irArgs, mainLine, runHtml, runSteps,
+module.exports = { HEX_VIEW_SOURCE, HIGHLIGHT_SOURCE, KRYON_PROGRAM_NOTICE, RunPreview, activateRun,
+  binaryContentStart, commandPath, elfCodeStart, execute, irArgs, mainLine, runHtml, runSteps,
   versionMismatchProblem, wasmCodeStart, workDirectoryFor, zxInstructionStart };

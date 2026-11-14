@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 const require = createRequire(import.meta.url);
-const { generatedFiles, isKryonProgram, manifestPath, previewBuild, previewHtml, previewLocation,
+const { isKryonProgram, manifestPath, previewBuild, previewHtml, previewLocation,
   projectRoot, safeEnvironment } = require('../preview.cjs');
 test('preview discovers projects, artifacts, profiles and package inspectors', async () => {
   const directory = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-preview-'));
@@ -14,14 +14,10 @@ test('preview discovers projects, artifacts, profiles and package inspectors', a
   try {
     const app = path.join(directory, 'app');
     await fs.mkdir(path.join(app, 'src'), { recursive: true });
-    for (const kind of ['c', 'ir']) await fs.mkdir(path.join(app, 'build/generated', kind), { recursive: true });
     await fs.writeFile(path.join(app, 'kryon.toml'), '[paths]\nziran="../compiler"\n[profiles.tui]\nbackend="terminal"\n');
     await fs.writeFile(path.join(app, 'src/app.zi'), '');
-    for (const file of ['c/app.c', 'c/app.h', 'ir/app.zir']) await fs.writeFile(path.join(app, 'build/generated', file), '');
     assert.equal(await projectRoot(path.join(app, 'src/app.zi')), app);
     assert.equal(await manifestPath(app, 'ziran', '../ziran'), path.join(directory, 'compiler'));
-    assert.deepEqual(await generatedFiles(app, 'c'), ['app.c']);
-    assert.deepEqual(await generatedFiles(app, 'ir'), ['app.zir']);
     const pkg = path.join(directory, 'button'); await fs.mkdir(pkg);
     const manifest = path.join(pkg, 'ziran.toml');
     await fs.writeFile(manifest, '[package]\nname="button"\n');
@@ -47,20 +43,9 @@ test('preview discovers projects, artifacts, profiles and package inspectors', a
     const decoy = path.join(directory, 'build/bin/ziran');
     await fs.mkdir(path.dirname(decoy), { recursive: true });
     await fs.writeFile(decoy, '#!/bin/sh\necho DECOY\n', { mode: 0o755 });
-    const inspector = path.join(directory, 'inspector');
-    await fs.writeFile(inspector, '#!/bin/sh\necho package-inspector\n', { mode: 0o755 });
     const vscode = { Uri: { file: fsPath => ({ fsPath }) }, workspace: {
       workspaceFolders: [], getConfiguration: () => ({ get: (_, fallback) => fallback }) } };
     assert.equal(await original(path.join(pkg, 'entry.zi'), vscode), decoy);
-    let lookup;
-    targets.ziranCommand = async (resource, api) => {
-      lookup = { resource, command: await original(resource, api) }; return inspector;
-    };
-    const preview = { root: pkg, vscode, profile: 'portable_web', state: { selectedIr: 'button.zir' } };
-    await require('../preview.cjs').Preview.prototype.loadIr.call(preview);
-    assert.equal(lookup.resource, manifest);
-    assert.notEqual(lookup.command, decoy);
-    assert.equal(preview.state.irSource, 'package-inspector\n');
   } finally {
     targets.ziranCommand = original;
     await fs.rm(directory, { recursive: true, force: true });
@@ -87,9 +72,12 @@ test('preview keeps child environments, webviews and rebuild inputs safe', () =>
     assert.equal(previewInput(root, path.join(root, file)), false, file);
   const html = previewHtml('nonce');
   assert.match(html, /<iframe id="app"/);
-  assert.match(html, />Open in New Window<.*id="window-status"/s);
   assert.match(html, /id="inspect">Inspect Targets</);
-  assert.match(html, /id="window-stdout".*id="window-stderr".*id="window-exit"/s);
+  // The preview is the embedded window only: no separate window and no raw
+  // Kryon-profile C or ZIR dumps; Inspect Targets opens the clean target tabs.
+  for (const removed of [/Open in New Window/, /open-window|window-output|window-status|window-stdout/,
+    /openWindow/, /Generated C|c-files|c-source/, /ZIR \(inspected\)|ir-files|ir-source/])
+    assert.doesNotMatch(html, removed);
   assert.doesNotThrow(() => new vm.Script(html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]));
 });
 test('preview assets refresh embedded files and reject paths outside the build', async () => {

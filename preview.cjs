@@ -152,18 +152,6 @@ async function manifestPath(root, name, fallback) {
   return path.resolve(root, fallback);
 }
 
-async function generatedFiles(root, kind, profile = '', output) {
-  const directory = generatedDirectory(root, kind, profile, output);
-  try {
-    const files = await fs.readdir(directory);
-    return files.filter((file) => file.endsWith(kind === 'c' ? '.c' : '.zir')).sort();
-  } catch { return []; }
-}
-
-function generatedDirectory(root, kind, profile = '', output = path.join(root, 'build')) {
-  return path.join(output, 'generated', ...(profile ? [profile] : []), kind);
-}
-
 async function projectBuildDirectory(root) {
   let parent = path.dirname(root);
   while (parent !== path.dirname(parent)) {
@@ -214,9 +202,7 @@ function previewHtml(nonce) {
   body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-editor-background); padding: 12px; }
   header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   h1 { font-size: 1.1rem; margin: 0; }
-  h2 { font-size: 0.95rem; }
-  button, select { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; padding: 5px 9px; }
-  select { max-width: 100%; }
+  button { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; padding: 5px 9px; }
   #status { color: var(--vscode-descriptionForeground); }
   pre { box-sizing: border-box; overflow: auto; white-space: pre; font-family: var(--vscode-editor-font-family), monospace; font-size: var(--vscode-editor-font-size); line-height: 1.3; border: 1px solid var(--vscode-panel-border); padding: 10px; }
   .window { border: 1px solid var(--vscode-panel-border); border-radius: 8px; overflow: hidden; background: var(--vscode-terminal-background, #10141a); }
@@ -225,77 +211,29 @@ function previewHtml(nonce) {
   #window-title { margin-left: 8px; font-size: .85rem; }
   #app { width: 100%; height: 70vh; border: 0; background: white; }
   #build-output:empty { display: none; }
-  details { margin-top: 16px; }
-  summary { cursor: pointer; font-weight: bold; margin-bottom: 8px; }
 </style></head><body>
-<header><h1>Kryon Preview</h1><button id="run">Run again</button><button id="open-window">Open in New Window</button><button id="inspect">Inspect Targets</button><span id="status">Starting…</span></header>
+<header><h1>Kryon Preview</h1><button id="run">Run again</button><button id="inspect">Inspect Targets</button><span id="status">Starting…</span></header>
 <div class="window" id="window"><div class="window-bar"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><span id="window-title"></span></div><iframe id="app" title="Interactive Kryon preview" sandbox="allow-scripts allow-pointer-lock"></iframe></div>
 <pre id="build-output"></pre>
-<details id="window-output"><summary>New window · <span id="window-status">Not opened</span></summary><h2>stdout</h2><pre id="window-stdout"></pre><h2>stderr</h2><pre id="window-stderr"></pre><div id="window-exit"></div></details>
-<details><summary>Generated C</summary><select id="c-files" aria-label="Generated C module"></select><pre id="c-source"></pre></details>
-<details><summary>ZIR (inspected)</summary><select id="ir-files" aria-label="ZIR module"></select><pre id="ir-source"></pre></details>
 <script nonce="${nonce}">
   const api = acquireVsCodeApi();
   const byId = (id) => document.getElementById(id);
   let currentHtml;
-  const fill = (id, files, selected) => {
-    const select = byId(id);
-    select.replaceChildren();
-    for (const file of files) {
-      const option = document.createElement('option');
-      option.value = file;
-      option.textContent = file;
-      select.append(option);
-    }
-    select.value = selected || '';
-    select.disabled = files.length === 0;
-  };
   window.addEventListener('message', ({ data }) => {
     if (data.type !== 'state') return;
     byId('status').textContent = data.status;
     byId('build-output').textContent = data.status.startsWith('Up to date') ? '' : data.output;
     byId('window-title').textContent = data.project;
-    byId('window-status').textContent = data.windowStatus;
-    byId('window-stdout').textContent = data.windowStdout;
-    byId('window-stderr').textContent = data.windowStderr;
-    byId('window-exit').textContent = data.windowExit === null ? '' : 'Exit status: ' + data.windowExit;
-    byId('open-window').disabled = data.windowBuilding;
-    byId('open-window').hidden = !data.program;
     byId('inspect').hidden = !data.program;
-    byId('window-output').hidden = !data.program;
     if (data.html !== currentHtml) {
       currentHtml = data.html;
       byId('app').srcdoc = data.html || '';
     }
-    fill('c-files', data.cFiles, data.selectedC);
-    fill('ir-files', data.irFiles, data.selectedIr);
-    byId('c-source').textContent = data.cSource;
-    byId('ir-source').textContent = data.irSource;
   });
   byId('run').addEventListener('click', () => api.postMessage({ type: 'run' }));
-  byId('open-window').addEventListener('click', () => api.postMessage({ type: 'openWindow' }));
   byId('inspect').addEventListener('click', () => api.postMessage({ type: 'inspect' }));
-  byId('c-files').addEventListener('change', (event) => api.postMessage({ type: 'c', file: event.target.value }));
-  byId('ir-files').addEventListener('change', (event) => api.postMessage({ type: 'ir', file: event.target.value }));
   api.postMessage({ type: 'ready' });
 </script></body></html>`;
-}
-
-async function stopOwnedProcess(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise(resolve => child.once('exit', resolve));
-  try {
-    if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGTERM');
-    else child.kill('SIGTERM');
-  } catch {}
-  await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 1500))]);
-  if (child.exitCode === null && child.signalCode === null) {
-    try {
-      if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
-      else child.kill('SIGKILL');
-    } catch {}
-    await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 500))]);
-  }
 }
 
 class Preview {
@@ -308,14 +246,10 @@ class Preview {
     this.disposed = false;
     this.running = false;
     this.rerun = false;
-    this.windowChild = null;
-    this.windowQueue = Promise.resolve();
     const title = this.source ? path.basename(this.source, '.zi') : path.basename(this.root);
     this.state = {
-      type: 'state', project: title, status: 'Starting…', output: '', frame: '', html: '', cFiles: [], irFiles: [],
-      selectedC: '', selectedIr: '', cSource: '', irSource: '', windowStatus: 'Not opened',
-      windowStdout: '', windowStderr: '', windowExit: null, windowBuilding: false,
-      // Only a single-file program has one source to run as a window or inspect.
+      type: 'state', project: title, status: 'Starting…', output: '', html: '',
+      // Only a single-file program has one source to inspect in the Run pane.
       program: Boolean(location.standalone),
     };
     this.panel = vscode.window.createWebviewPanel('kryonPreview',
@@ -350,7 +284,6 @@ class Preview {
     if (this.disposed) return;
     this.disposed = true;
     clearTimeout(this.timer);
-    void stopOwnedProcess(this.windowChild);
     for (const disposable of this.disposables) disposable.dispose();
   }
 
@@ -365,104 +298,9 @@ class Preview {
   async message(message) {
     if (message.type === 'ready') this.post();
     if (message.type === 'run') this.schedule();
-    if (message.type === 'openWindow') {
-      this.windowQueue = this.windowQueue.then(() => this.openWindow());
-      await this.windowQueue;
-    }
     if (message.type === 'inspect' && this.location.standalone) {
       await this.vscode.commands.executeCommand('ziran.inspect', this.vscode.Uri.file(this.source));
     }
-    if (message.type === 'c' && this.state.cFiles.includes(message.file)) {
-      this.state.selectedC = message.file;
-      await this.loadC();
-      this.post();
-    }
-    if (message.type === 'ir' && this.state.irFiles.includes(message.file)) {
-      this.state.selectedIr = message.file;
-      await this.loadIr();
-      this.post();
-    }
-  }
-
-  async openWindow() {
-    if (this.disposed || !this.location.standalone) return;
-    await stopOwnedProcess(this.windowChild);
-    this.windowChild = null;
-    Object.assign(this.state, { windowStatus: 'Building C executable…', windowStdout: '',
-      windowStderr: '', windowExit: null, windowBuilding: true });
-    this.post();
-    const { buildArgs, modulePaths, packageRoot, ziranCommand } = require('./targets.cjs');
-    const command = await ziranCommand(this.source, this.vscode);
-    const paths = await modulePaths(this.source, command, this.vscode);
-    const project = await packageRoot(this.source);
-    const cwd = project || path.dirname(this.source);
-    const key = createHash('sha256').update(this.source).digest('hex').slice(0, 16);
-    const output = path.join(this.storage, 'window-c', key);
-    await fs.rm(output, { recursive: true, force: true });
-    await fs.mkdir(output, { recursive: true });
-    const result = await runCommand(command,
-      buildArgs('c', this.source, output, paths, Boolean(project), { exe: true }), cwd);
-    if (this.disposed) return;
-    this.state.windowStdout = result.stdout;
-    this.state.windowStderr = result.stderr;
-    this.state.windowExit = result.code;
-    if (result.code !== 0) {
-      this.state.windowStatus = result.code === null ? 'Could not start the C build' : 'C build failed';
-      this.state.windowBuilding = false;
-      this.post();
-      return;
-    }
-    const program = path.join(output, path.basename(this.source, '.zi'));
-    if (!(await exists(program))) {
-      Object.assign(this.state, { windowStatus: 'C build wrote no executable', windowBuilding: false });
-      this.post();
-      return;
-    }
-    const child = spawn(program, [], { cwd, env: process.env, windowsHide: false,
-      detached: process.platform !== 'win32' });
-    this.windowChild = child;
-    Object.assign(this.state, { windowStatus: 'Window running', windowStdout: '', windowStderr: '',
-      windowExit: null, windowBuilding: false });
-    child.stdout.on('data', data => {
-      if (this.windowChild !== child) return;
-      this.state.windowStdout = (this.state.windowStdout + data.toString()).slice(-2 * 1024 * 1024);
-      this.post();
-    });
-    child.stderr.on('data', data => {
-      if (this.windowChild !== child) return;
-      this.state.windowStderr = (this.state.windowStderr + data.toString()).slice(-2 * 1024 * 1024);
-      this.post();
-    });
-    child.on('error', error => {
-      if (this.windowChild !== child) return;
-      this.state.windowStderr = error.message;
-      this.state.windowStatus = 'Could not open window';
-      this.post();
-    });
-    child.on('close', (code, signal) => {
-      if (this.windowChild !== child) return;
-      this.windowChild = null;
-      this.state.windowExit = code === null ? `signal ${signal}` : code;
-      this.state.windowStatus = signal ? 'Window stopped' : 'Window exited';
-      this.post();
-    });
-    this.post();
-  }
-
-  async loadC() {
-    try {
-      this.state.cSource = await fs.readFile(path.join(generatedDirectory(this.root, 'c', this.profile, this.outputDirectory), this.state.selectedC), 'utf8');
-    } catch (error) { this.state.cSource = error.message; }
-  }
-
-  async loadIr() {
-    const { ziranCommand } = require('./targets.cjs');
-    const manifest = path.join(this.root, await exists(path.join(this.root, 'ziran.toml')) ? 'ziran.toml' : 'kryon.toml');
-    const command = await ziranCommand(manifest, this.vscode);
-    const file = path.join(generatedDirectory(this.root, 'ir', this.profile, this.outputDirectory), this.state.selectedIr);
-    const result = await runCommand(command,
-      ['inspect', file], this.root);
-    this.state.irSource = result.code === 0 ? result.stdout : result.stderr;
   }
 
   async run() {
@@ -481,35 +319,16 @@ class Preview {
       const local = path.join(os.homedir(), '.local', 'bin', 'kryon');
       if (!command) command = await exists(local) ? local : 'kryon';
       const build = await previewBuild(this.root, configured.get('previewProfile', ''));
-      this.profile = build.profile;
-      this.outputDirectory = path.dirname(build.artifact);
       const result = await runCommand(command, ['build', '--profile', build.profile], this.root);
       if (this.disposed) return;
       this.state.output = (result.stdout + result.stderr).trimEnd();
-      this.state.frame = '';
       this.state.html = result.code === 0 ? await require('./preview-assets.cjs').previewAssets(build.artifact) : '';
       this.state.status = result.code === 0 ? 'Up to date · reloads on save' :
         `Build or run failed${result.code === null ? '' : ` (exit ${result.code})`}`;
-      if (result.code === 0) {
-        this.state.cFiles = await generatedFiles(this.root, 'c', this.profile, this.outputDirectory);
-        this.state.irFiles = await generatedFiles(this.root, 'ir', this.profile, this.outputDirectory);
-        if (!this.state.cFiles.includes(this.state.selectedC)) {
-          this.state.selectedC = this.state.cFiles.includes('app.c') ? 'app.c' : this.state.cFiles[0] || '';
-        }
-        if (!this.state.irFiles.includes(this.state.selectedIr)) {
-          this.state.selectedIr = this.state.irFiles.includes('app.zir') ? 'app.zir' : this.state.irFiles[0] || '';
-        }
-        this.state.cSource = this.state.selectedC ? (await fs.readFile(path.join(generatedDirectory(this.root, 'c', this.profile, this.outputDirectory), this.state.selectedC), 'utf8')) : '';
-        if (this.state.selectedIr) await this.loadIr();
-      } else {
-        Object.assign(this.state, { cFiles: [], irFiles: [], selectedC: '',
-          selectedIr: '', cSource: '', irSource: '' });
-      }
       this.post();
     } catch (error) {
       this.state.status = 'Preview failed';
       this.state.output = error.message;
-      this.state.frame = '';
       this.state.html = '';
       this.post();
     } finally {
@@ -521,7 +340,6 @@ class Preview {
 
 function activatePreview(context, vscode) {
   const previews = new Map();
-  // Deactivation ends every window a preview opened.
   context.subscriptions.push({ dispose() { for (const preview of previews.values()) preview.dispose(); } });
   const runButton = vscode.window.createStatusBarItem('kryon.run',
     vscode.StatusBarAlignment.Left, 1000);
@@ -581,6 +399,6 @@ function activatePreview(context, vscode) {
   }));
 }
 
-module.exports = { activatePreview, generatedFiles, manifestPath, previewHtml,
+module.exports = { activatePreview, manifestPath, previewHtml,
   isKryonProgram, prepareStandalonePreview, previewLocation, projectRoot, runCommand,
-  safeEnvironment, previewBuild, previewInput, Preview, stopOwnedProcess };
+  safeEnvironment, previewBuild, previewInput, Preview };

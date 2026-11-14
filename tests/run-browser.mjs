@@ -79,7 +79,7 @@ try {
     await view('LIR').click();
     assert.match(await run.locator('#code').textContent(), /^lir \d+ entry/);
     await view('ZX').click();
-    await run.waitForFunction(() => document.querySelector('#hex-title').textContent.startsWith('portable.zx'));
+    await run.waitForFunction(() => document.querySelector('#hex-title').textContent.startsWith('final.zx'));
     await view('Assembly').click();
     assert.match(await run.locator('#code').textContent(), /<hello:main>:[\s\S]*syscall/);
     await view('Binary').click();
@@ -97,8 +97,10 @@ try {
     for (const tab of ['C', 'Go', 'ZIR']) {
       await run.getByRole('tab', {name: tab, exact: true}).click({timeout:180000});
       const extension = {C:'c', Go:'go', ZIR:'zir'}[tab];
-      await run.locator('#file-row select').selectOption(`${path.basename(entry, '.zi')}.${extension}`);
       await run.locator('#code').filter({hasText: /function|#include|package/}).waitFor({timeout:180000});
+      // The program's own module is shown first; dependencies sit in their own picker.
+      const own = run.locator('#own-files');
+      if (await own.count()) assert.equal(await own.inputValue(), `${path.basename(entry, '.zi')}.${extension}`);
       assert.doesNotMatch(await run.locator('#code').textContent(), /cannot find imported module/);
     }
     // The program's bundle and run use one toolchain: a project bundle is

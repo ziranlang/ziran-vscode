@@ -92,6 +92,10 @@ test('run commands, webview navigation and generated-code highlighting stay vali
   const html = runHtml('nonce');
   for (const pattern of [/class="window"/, /label: 'ZIR'/, /id="views" role="tablist"/, /id="hex-scroll"/, /Show full file/]) assert.match(html, pattern);
   assert.doesNotMatch(html, /label: 'ZX'|id="ir-section"/);
+  // Dependency files sit in their own picker, and a failure reads as one line
+  // with the tool's full output collapsed beneath it.
+  for (const pattern of [/'dependency-files'/, /'own-files'/, /← Own code/, /id="problem-details" hidden/])
+    assert.match(html, pattern);
   assert.doesNotThrow(() => new vm.Script(html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]));
   const syntax = {}; vm.runInNewContext(`${HIGHLIGHT_SOURCE}\nthis.highlight=highlight;this.languageOf=languageOf;`, syntax);
   const highlighted = syntax.highlight('int32_t main(void) { return 42; } // done <x>\n#include "a.h"', 'c');
@@ -111,4 +115,30 @@ test('ZIR version failures identify the selected compiler tools', () => {
   assert.match(message, /Toolchain paths:\n  ziran: \/checkout\/build\/bin\/ziran\n  zi2zx: \/home\/wao\/\.local\/bin\/zi2zx$/);
   assert.equal(versionMismatchProblem('syntax error', '/ziran', '/zi2zx'), 'syntax error');
   assert.match(versionMismatchProblem('invalid embedded ZIR', '/ziran', null), /zi2zx: not found$/);
+});
+
+test('dependency files reach the webview as keys and load only when asked', async () => {
+  const { KRYON_PROGRAM_NOTICE, RunPreview } = require('../run.cjs');
+  assert.doesNotMatch(KRYON_PROGRAM_NOTICE, /New Window/);
+  const posted = [];
+  const pane = Object.assign(Object.create(RunPreview.prototype), { disposed: false, generation: 0,
+    state: {}, panel: { webview: { postMessage: (message) => posted.push(message) } } });
+  pane.beginRegistration();
+  let loads = 0;
+  const result = await pane.registerResult({ id: 'c', views: [{ id: 'source', files: [
+    { name: 'window.c', text: 'own' },
+    { name: 'app.c', dependency: true, size: 3, load: async () => { loads++; return 'dep'; } }] }] });
+  const [own, dependency] = result.views[0].files;
+  assert.equal(own.text, 'own');
+  assert.equal(dependency.load, undefined);
+  assert.equal(dependency.text, undefined);
+  assert.equal(dependency.lazy, '1:c:source:app.c');
+  assert.equal(pane.state.generation, 1);
+  assert.equal(loads, 0);
+  assert.doesNotThrow(() => JSON.stringify(result));
+  await pane.message({ type: 'text', key: dependency.lazy });
+  assert.deepEqual(posted, [{ type: 'text', key: '1:c:source:app.c', text: 'dep' }]);
+  assert.equal(loads, 1);
+  await pane.message({ type: 'text', key: 'stale' });
+  assert.match(posted[1].text, /earlier build/);
 });
