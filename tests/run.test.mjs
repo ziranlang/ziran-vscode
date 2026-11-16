@@ -3,8 +3,9 @@ import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 const require = createRequire(import.meta.url);
-const { HEX_VIEW_SOURCE, HIGHLIGHT_SOURCE, binaryContentStart, elfCodeStart, mainLine, runHtml,
-  runSteps, versionMismatchProblem, workDirectoryFor } = require('../run.cjs');
+const { mainLine, runHtml, runSteps, versionMismatchProblem, workDirectoryFor } = require('../run.cjs');
+const { HEX_VIEW_SOURCE, HIGHLIGHT_SOURCE, TargetInspector } = require('../inspector.cjs');
+const { binaryRegions } = require('../binary-layout.cjs');
 const put = (data, values) => { for (const [method, offset, value] of values) data[method](value, offset); return data; };
 function elf64(main = true, mainName = 'main') {
   const data = Buffer.alloc(0x500); Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]).copy(data);
@@ -55,21 +56,52 @@ function zx() {
       ['writeUInt32LE', 88 + index * 32, 8]]);
   data[288] = 3; return data;
 }
-test('binary views start at executable content and reject malformed inputs', () => {
+const parts = (input) => binaryRegions(input)?.regions.map(({ start, end, kind, label }) => [label, kind, start, end]);
+test('binary regions cover each file and mark the program\'s code and data', () => {
+  assert.deepEqual(parts(elf64()), [['ELF header', 'header', 0, 64], ['padding', 'padding', 64, 0x180],
+    ['.text', 'code', 0x180, 0x1c0], ['padding', 'padding', 0x1c0, 0x200], ['.shstrtab', 'header', 0x200, 0x221],
+    ['padding', 'padding', 0x221, 0x240], ['.strtab', 'header', 0x240, 0x246], ['padding', 'padding', 0x246, 0x280],
+    ['.symtab', 'header', 0x280, 0x2b0], ['padding', 'padding', 0x2b0, 0x300],
+    ['section headers (5)', 'header', 0x300, 0x440], ['padding', 'padding', 0x440, 0x500]]);
+  assert.equal(binaryRegions(elf64()).filterLabel, 'Hide ELF parts');
+  // Without sections, each loadable segment outside the headers is code or data.
+  assert.deepEqual(parts(elf64Entry()), [['ELF header', 'header', 0, 64], ['program headers (1)', 'header', 64, 120],
+    ['padding', 'padding', 120, 0x100], ['segment 0 (R E)', 'code', 0x100, 0x180], ['padding', 'padding', 0x180, 0x200]]);
+  assert.deepEqual(parts(elf32Entry()), [['ELF header', 'header', 0, 52], ['program headers (1)', 'header', 52, 84],
+    ['padding', 'padding', 84, 0x80], ['segment 0 (R E)', 'code', 0x80, 0xc0], ['padding', 'padding', 0xc0, 0x100]]);
   const wasm = Buffer.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 1, 0x60, 10, 4, 1, 2, 0, 0]);
-  for (const [name, input, expected] of [
-    ['ELF main', elf64(), { offset: 0x190, label: 'main at 0x190 (.text)', toggleLabel: 'Show ELF headers' }],
-    ['Ziran main', elf64(true, 'hello:main'), { offset: 0x190, label: 'hello:main at 0x190 (.text)', toggleLabel: 'Show ELF headers' }],
-    ['stripped ELF', elf64(false), { offset: 0x180, label: 'code starts at 0x180 (.text)', toggleLabel: 'Show ELF headers' }],
-    ['ELF64 entry', elf64Entry(), { offset: 0x100, label: 'code starts at 0x100 (entry segment)', toggleLabel: 'Show ELF headers' }],
-    ['ELF32 big endian', elf32Entry(), { offset: 0x80, label: 'code starts at 0x80 (entry segment)', toggleLabel: 'Show ELF headers' }],
-    ['Wasm', wasm, { offset: 13, label: 'code starts at 0xd (Wasm code section)', toggleLabel: 'Show full file' }],
-    ['ZX', zx(), { offset: 288, label: 'instructions start at 0x120 (ZX program section)', toggleLabel: 'Show full file' }],
-  ]) assert.deepEqual(binaryContentStart(input), expected, name);
+  assert.deepEqual(parts(wasm), [['Wasm header', 'header', 0, 8], ['type section', 'header', 8, 11],
+    ['code section', 'code', 11, 17]]);
+  assert.deepEqual(parts(zx()), [['ZX header', 'header', 0, 64], ['section table (3)', 'header', 64, 160],
+    ['section 1', 'header', 160, 288], ['program section', 'code', 288, 296], ['section 3', 'header', 296, 300]]);
   const malformedElf = elf64(); malformedElf.writeBigUInt64LE(0x100000n, 40);
-  for (const input of [Buffer.from('unknown'), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]),
+  for (const input of [Buffer.from('unknown!'), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0]),
     malformedElf, Buffer.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 10, 127])])
-    assert.equal(binaryContentStart(input), null);
+    assert.equal(binaryRegions(input), null);
+});
+test('the hex view shows every region with its label, or only the program', () => {
+  const hex = {}; vm.runInNewContext(`${HEX_VIEW_SOURCE}\nObject.assign(this, { hexFilterable, hexLayout, hexRowAt, hexRowOf, hexLabel });`, hex);
+  const { regions } = binaryRegions(elf64Entry());
+  const full = hex.hexLayout(regions, 0x200, false);
+  // A label row, then the region's rows of sixteen bytes at their real offsets.
+  const plain = (value) => JSON.parse(JSON.stringify(value));
+  assert.deepEqual(plain(full.blocks.map((block) => [block.region.label, block.row, block.first, block.count])),
+    [['ELF header', 0, 0, 4], ['program headers (1)', 5, 4, 4], ['padding', 10, 7, 9],
+      ['segment 0 (R E)', 20, 16, 8], ['padding', 29, 24, 8]]);
+  assert.equal(full.rows, 38);
+  assert.equal(hex.hexRowAt(full, 0).line, -1);
+  assert.equal(hex.hexLabel(hex.hexRowAt(full, 20).block.region), '── segment 0 (R E) · 0x100–0x180 · 128 bytes');
+  assert.equal(hex.hexRowOf(full, 0x40), 6);
+  const program = hex.hexLayout(regions, 0x200, true);
+  assert.deepEqual(plain(program.blocks.map((block) => block.region.label)), ['segment 0 (R E)']);
+  assert.equal(program.rows, 9);
+  assert.equal(hex.hexRowOf(program, 0x110), 2);
+  assert.equal(hex.hexRowOf(program, 0x10), -1, 'the ELF header is hidden');
+  assert.equal(hex.hexFilterable(regions), true);
+  assert.equal(hex.hexFilterable(null), false);
+  // A file of unknown format is one unlabelled run of rows.
+  const unknown = hex.hexLayout(null, 40, true);
+  assert.equal(unknown.rows, 3); assert.equal(hex.hexRowAt(unknown, 0).line, 0);
 });
 test('run commands, webview navigation and generated-code highlighting stay valid', () => {
   const work = workDirectoryFor('/notes/hello.zi', '/extension-storage/run/owned');
@@ -85,13 +117,12 @@ test('run commands, webview navigation and generated-code highlighting stay vali
   // A project bundle runs on the pinned toolchain that wrote it.
   assert.deepEqual(runSteps('ziran', '/app/src/hello.zi', [], '/tmp/hello.zx', true)[1],
     { command: 'ziran', args: ['run', '--project', '/tmp/hello.zx'] });
-  const hex = {}; vm.runInNewContext(`${HEX_VIEW_SOURCE}\nthis.hexWindow = hexWindow;`, hex);
-  assert.equal(hex.hexWindow(0x1040, false).start, 0x1040);
-  const revealed = hex.hexWindow(0x1040, false, 0x40);
-  assert.equal(revealed.start, 0); assert.equal(revealed.showFullFile, true);
   const html = runHtml('nonce');
-  for (const pattern of [/class="window"/, /label: 'ZIR'/, /id="views" role="tablist"/, /id="hex-scroll"/, /Show full file/]) assert.match(html, pattern);
-  assert.doesNotMatch(html, /label: 'ZX'|id="ir-section"/);
+  for (const pattern of [/class="window"/, /id="views" role="tablist"/, /id="hex-scroll"/, /box\.id = 'program-only'/])
+    assert.match(html, pattern);
+  // No ZIR tab, no view descriptions and no separate header toggle.
+  for (const removed of [/'ZIR'|irModules|irError/, /caption/, /hex-headers|Show full file|hex-code/])
+    assert.doesNotMatch(html, removed);
   // Dependency files sit in their own picker, and a failure reads as one line
   // with the tool's full output collapsed beneath it.
   for (const pattern of [/'dependency-files'/, /'own-files'/, /← Own code/, /id="problem-details" hidden/])
@@ -118,27 +149,28 @@ test('ZIR version failures identify the selected compiler tools', () => {
 });
 
 test('dependency files reach the webview as keys and load only when asked', async () => {
-  const { KRYON_PROGRAM_NOTICE, RunPreview } = require('../run.cjs');
+  const { KRYON_PROGRAM_NOTICE } = require('../run.cjs');
   assert.doesNotMatch(KRYON_PROGRAM_NOTICE, /New Window/);
   const posted = [];
-  const pane = Object.assign(Object.create(RunPreview.prototype), { disposed: false, generation: 0,
-    state: {}, panel: { webview: { postMessage: (message) => posted.push(message) } } });
-  pane.beginRegistration();
+  const inspector = new TargetInspector({ vscode: {}, state: {}, post: () => {},
+    send: (message) => posted.push(message), storage: '/extension-storage', rerun: () => {} });
+  inspector.beginRegistration();
   let loads = 0;
-  const result = await pane.registerResult({ id: 'c', views: [{ id: 'source', files: [
+  const result = await inspector.registerResult({ id: 'c', views: [{ id: 'generated', files: [
     { name: 'window.c', text: 'own' },
     { name: 'app.c', dependency: true, size: 3, load: async () => { loads++; return 'dep'; } }] }] });
   const [own, dependency] = result.views[0].files;
   assert.equal(own.text, 'own');
   assert.equal(dependency.load, undefined);
   assert.equal(dependency.text, undefined);
-  assert.equal(dependency.lazy, '1:c:source:app.c');
-  assert.equal(pane.state.generation, 1);
+  assert.equal(dependency.lazy, '1:c:generated:app.c');
+  assert.equal(inspector.state.generation, 1);
   assert.equal(loads, 0);
   assert.doesNotThrow(() => JSON.stringify(result));
-  await pane.message({ type: 'text', key: dependency.lazy });
-  assert.deepEqual(posted, [{ type: 'text', key: '1:c:source:app.c', text: 'dep' }]);
+  assert.equal(await inspector.message({ type: 'text', key: dependency.lazy }), true);
+  assert.deepEqual(posted, [{ type: 'text', key: '1:c:generated:app.c', text: 'dep' }]);
   assert.equal(loads, 1);
-  await pane.message({ type: 'text', key: 'stale' });
+  await inspector.message({ type: 'text', key: 'stale' });
   assert.match(posted[1].text, /earlier build/);
+  assert.equal(await inspector.message({ type: 'run' }), false);
 });

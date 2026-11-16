@@ -194,46 +194,85 @@ function previewInput(root, file) {
 }
 
 function previewHtml(nonce) {
+  const { INSPECTOR_MARKUP, INSPECTOR_SCRIPT, INSPECTOR_STYLE } = require('./inspector.cjs');
   return `<!doctype html>
 <html lang="en"><head><meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src blob:; connect-src data: blob:; frame-src 'self'; img-src data: blob:; font-src data:;">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style nonce="${nonce}">
   body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-editor-background); padding: 12px; }
-  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
   h1 { font-size: 1.1rem; margin: 0; }
-  button { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; padding: 5px 9px; }
-  #status { color: var(--vscode-descriptionForeground); }
-  pre { box-sizing: border-box; overflow: auto; white-space: pre; font-family: var(--vscode-editor-font-family), monospace; font-size: var(--vscode-editor-font-size); line-height: 1.3; border: 1px solid var(--vscode-panel-border); padding: 10px; }
+  header button { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; padding: 5px 9px; }
+  #status, #window-status { color: var(--vscode-descriptionForeground); }
+  #build-output { box-sizing: border-box; overflow: auto; white-space: pre; font-family: var(--vscode-editor-font-family), monospace; font-size: var(--vscode-editor-font-size); line-height: 1.3; border: 1px solid var(--vscode-panel-border); padding: 10px; }
   .window { border: 1px solid var(--vscode-panel-border); border-radius: 8px; overflow: hidden; background: var(--vscode-terminal-background, #10141a); }
   .window-bar { display: flex; align-items: center; gap: 6px; padding: 7px 10px; background: var(--vscode-titleBar-activeBackground, #252526); border-bottom: 1px solid var(--vscode-panel-border); }
   .window-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--vscode-descriptionForeground); opacity: .55; }
   #window-title { margin-left: 8px; font-size: .85rem; }
   #app { width: 100%; height: 70vh; border: 0; background: white; }
   #build-output:empty { display: none; }
+${INSPECTOR_STYLE}
 </style></head><body>
-<header><h1>Kryon Preview</h1><button id="run">Run again</button><button id="inspect">Inspect Targets</button><span id="status">Starting…</span></header>
+<header><h1>Kryon Preview</h1><button id="run">Run again</button><button id="open-window" hidden>Open in window</button><span id="status">Starting…</span><span id="window-status"></span></header>
 <div class="window" id="window"><div class="window-bar"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><span id="window-title"></span></div><iframe id="app" title="Interactive Kryon preview" sandbox="allow-scripts allow-pointer-lock"></iframe></div>
 <pre id="build-output"></pre>
+${INSPECTOR_MARKUP}
 <script nonce="${nonce}">
   const api = acquireVsCodeApi();
   const byId = (id) => document.getElementById(id);
+${INSPECTOR_SCRIPT}
   let currentHtml;
   window.addEventListener('message', ({ data }) => {
-    if (data.type !== 'state') return;
+    if (inspector.receive(data) || data.type !== 'state') return;
     byId('status').textContent = data.status;
-    byId('build-output').textContent = data.status.startsWith('Up to date') ? '' : data.output;
+    byId('build-output').textContent = [data.status.startsWith('Up to date') ? '' : data.output,
+      data.windowOutput].filter(Boolean).join('\\n\\n');
     byId('window-title').textContent = data.project;
-    byId('inspect').hidden = !data.program;
+    byId('open-window').hidden = !data.program;
+    byId('open-window').disabled = data.windowBuilding;
+    byId('window-status').textContent = data.windowStatus;
     if (data.html !== currentHtml) {
       currentHtml = data.html;
       byId('app').srcdoc = data.html || '';
     }
+    byId('code-section').hidden = !data.inspectable;
+    inspector.render(data);
   });
   byId('run').addEventListener('click', () => api.postMessage({ type: 'run' }));
-  byId('inspect').addEventListener('click', () => api.postMessage({ type: 'inspect' }));
+  byId('open-window').addEventListener('click', () => api.postMessage({ type: 'openWindow' }));
   api.postMessage({ type: 'ready' });
 </script></body></html>`;
+}
+
+// End an owned window process and its children: SIGTERM, then SIGKILL.
+async function stopOwnedProcess(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  const signal = (name) => {
+    try {
+      if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, name);
+      else child.kill(name);
+    } catch {}
+  };
+  signal('SIGTERM');
+  await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 1500))]);
+  if (child.exitCode === null && child.signalCode === null) {
+    signal('SIGKILL');
+    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 500))]);
+  }
+}
+
+// The entry a project preview inspects when it was opened from a folder.
+async function projectEntry(root) {
+  for (const name of ['ziran.toml', 'kryon.toml']) {
+    try {
+      const config = parse(await fs.readFile(path.join(root, name), 'utf8'));
+      const entry = config.tool?.kryon?.entry || config.package?.entry || config.project?.entry;
+      if (typeof entry === 'string' && await exists(path.resolve(root, entry))) return path.resolve(root, entry);
+    } catch {}
+  }
+  return '';
 }
 
 class Preview {
@@ -246,15 +285,23 @@ class Preview {
     this.disposed = false;
     this.running = false;
     this.rerun = false;
+    this.windowChild = null;
+    this.windowQueue = Promise.resolve();
+    this.inspecting = false;
+    this.reinspect = false;
     const title = this.source ? path.basename(this.source, '.zi') : path.basename(this.root);
     this.state = {
-      type: 'state', project: title, status: 'Starting…', output: '', html: '',
-      // Only a single-file program has one source to inspect in the Run pane.
-      program: Boolean(location.standalone),
+      type: 'state', project: title, status: 'Starting…', output: '', html: '', inspectable: false,
+      // A single-file program owns main, so it can also run in its own window.
+      program: Boolean(location.standalone), windowStatus: '', windowOutput: '', windowBuilding: false,
     };
     this.panel = vscode.window.createWebviewPanel('kryonPreview',
       `Preview: ${title}`, vscode.ViewColumn.Beside,
       { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] });
+    const { TargetInspector } = require('./inspector.cjs');
+    this.inspector = new TargetInspector({ vscode, state: this.state, post: () => this.post(),
+      send: (message) => { if (!this.disposed) this.panel.webview.postMessage(message); },
+      storage: this.storage, rerun: () => this.inspectTargets() });
     this.panel.webview.html = previewHtml(randomBytes(16).toString('hex'));
     const watchTarget = location.standalone ? path.dirname(this.source) : this.root;
     const watchRoot = vscode.workspace.getWorkspaceFolder?.(vscode.Uri.file(watchTarget))?.uri.fsPath || watchTarget;
@@ -265,6 +312,11 @@ class Preview {
         if (document.uri.scheme === 'file' && previewInput(watchRoot, document.uri.fsPath)) {
           this.schedule();
         }
+      }),
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (!this.inspector.file || !event.affectsConfiguration('ziran', vscode.Uri.file(this.inspector.file))) return;
+        this.inspector.refreshTargets();
+        this.inspectTargets();
       }),
     ];
     for (const pattern of ['**/*.zi', '**/kryon.toml', '**/ziran{,.local}.toml', '**/ziran.lock']) {
@@ -284,7 +336,9 @@ class Preview {
     if (this.disposed) return;
     this.disposed = true;
     clearTimeout(this.timer);
+    void stopOwnedProcess(this.windowChild);
     for (const disposable of this.disposables) disposable.dispose();
+    this.inspector.dispose();
   }
 
   post() { if (!this.disposed) this.panel.webview.postMessage(this.state); }
@@ -298,8 +352,93 @@ class Preview {
   async message(message) {
     if (message.type === 'ready') this.post();
     if (message.type === 'run') this.schedule();
-    if (message.type === 'inspect' && this.location.standalone) {
-      await this.vscode.commands.executeCommand('ziran.inspect', this.vscode.Uri.file(this.source));
+    if (message.type === 'openWindow') {
+      this.windowQueue = this.windowQueue.then(() => this.openWindow()).catch((error) => {
+        Object.assign(this.state, { windowStatus: 'Could not open the window', windowOutput: error.message,
+          windowBuilding: false });
+        this.post();
+      });
+      await this.windowQueue;
+    }
+    await this.inspector.message(message);
+  }
+
+  // The program's C executable as one owned process with its own window;
+  // opening it again replaces the previous one.
+  async openWindow() {
+    if (this.disposed || !this.state.program) return;
+    await stopOwnedProcess(this.windowChild);
+    this.windowChild = null;
+    Object.assign(this.state, { windowStatus: 'Building the window…', windowOutput: '', windowBuilding: true });
+    this.post();
+    const { buildArgs, modulePaths, packageRoot, ziranCommand } = require('./targets.cjs');
+    const command = await ziranCommand(this.source, this.vscode);
+    const paths = await modulePaths(this.source, command, this.vscode);
+    const project = await packageRoot(this.source);
+    const cwd = project || path.dirname(this.source);
+    const key = createHash('sha256').update(this.source).digest('hex').slice(0, 16);
+    const output = path.join(this.storage, 'window-c', key);
+    await fs.rm(output, { recursive: true, force: true });
+    await fs.mkdir(output, { recursive: true });
+    const built = await runCommand(command,
+      buildArgs('c', this.source, output, paths, Boolean(project), { exe: true }), cwd);
+    if (this.disposed) return;
+    const program = path.join(output, path.basename(this.source, '.zi'));
+    if (built.code !== 0 || !(await exists(program))) {
+      Object.assign(this.state, { windowBuilding: false,
+        windowStatus: built.code === 0 ? 'The C build wrote no executable' : 'C build failed',
+        windowOutput: (built.stderr || built.stdout).trim() });
+      this.post();
+      return;
+    }
+    // The window needs the editor's display, so it keeps the full environment.
+    const child = spawn(program, [], { cwd, env: process.env, stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: false, detached: process.platform !== 'win32' });
+    this.windowChild = child;
+    let errors = '';
+    child.stderr.on('data', (data) => { errors = (errors + data.toString()).slice(-65536); });
+    child.on('error', (error) => {
+      if (this.windowChild !== child) return;
+      Object.assign(this.state, { windowStatus: 'Could not open the window', windowOutput: error.message });
+      this.post();
+    });
+    child.on('close', (code, signal) => {
+      if (this.windowChild !== child) return;
+      this.windowChild = null;
+      Object.assign(this.state, { windowOutput: code ? errors.trim() : '',
+        windowStatus: signal ? 'Window stopped' : code ? `Window exited with ${code}` : 'Window closed' });
+      this.post();
+    });
+    Object.assign(this.state, { windowStatus: 'Window open', windowBuilding: false });
+    this.post();
+  }
+
+  // The target views under the live window, for the previewed source or the
+  // project's entry. A save reruns them beside the preview build.
+  async inspectTargets() {
+    if (this.disposed) return;
+    if (this.inspecting) { this.reinspect = true; return; }
+    this.inspecting = true;
+    try {
+      const file = this.source || await projectEntry(this.root);
+      this.state.inspectable = Boolean(file);
+      if (!file) return;
+      const { importingPrograms, mainLine, modulePaths, noMainMessage, ziranCommand } = require('./targets.cjs');
+      this.inspector.retarget(file);
+      const command = await ziranCommand(file, this.vscode);
+      const paths = await modulePaths(file, command, this.vscode);
+      let source = '';
+      try { source = await fs.readFile(file, 'utf8'); } catch {}
+      const hasMain = mainLine(source) >= 0;
+      const noMain = hasMain ? '' : noMainMessage(file, await importingPrograms(file));
+      const folders = (this.vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath);
+      await this.inspector.inspect({ command, paths, hasMain, noMain, folders });
+    } catch (error) {
+      this.state.results = this.state.enabled.map((id) => ({ id, ok: false, message: error.message, views: [] }));
+    } finally {
+      this.inspecting = false;
+      this.post();
+      if (this.reinspect && !this.disposed) { this.reinspect = false; this.inspectTargets(); }
     }
   }
 
@@ -309,6 +448,7 @@ class Preview {
     this.running = true;
     this.state.status = 'Building and running…';
     this.post();
+    this.inspectTargets();
     try {
       if (this.location.standalone) {
         this.root = await prepareStandalonePreview(this.source, this.storage, this.vscode);
@@ -399,6 +539,6 @@ function activatePreview(context, vscode) {
   }));
 }
 
-module.exports = { activatePreview, manifestPath, previewHtml,
+module.exports = { activatePreview, manifestPath, previewHtml, projectEntry,
   isKryonProgram, prepareStandalonePreview, previewLocation, projectRoot, runCommand,
-  safeEnvironment, previewBuild, previewInput, Preview };
+  safeEnvironment, previewBuild, previewInput, Preview, stopOwnedProcess };

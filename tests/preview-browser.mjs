@@ -2,7 +2,7 @@
 import { chromium } from 'playwright-core';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { editor } from './editor.mjs';
 import assert from 'node:assert/strict';
 const repo = path.resolve(import.meta.dirname, '..');
@@ -13,6 +13,7 @@ const real = Boolean(process.env.ZIRAN_PREVIEW_FIXTURE || process.env.ZIRAN_PREV
 const windowExample = process.env.ZIRAN_PREVIEW_WINDOW === '1';
 let browser;
 let child;
+let windowProcess;
 const installed = process.env.ZIRAN_INSTALLED_EXTENSION;
 try {
   fixture = process.env.ZIRAN_PREVIEW_FIXTURE ? await (await import('./preview-fixture.cjs')).default.createFixture(runtime, repo) : null;
@@ -78,7 +79,7 @@ try {
   } else if (windowExample) {
     assert.equal(await preview.locator('#screen').count(), 0,
       'Kryon entries must not open the portable scalar-output Run pane');
-    assert.equal(await preview.locator('#open-window').count(), 0, 'the preview has no separate window');
+    assert.equal(await preview.locator('#inspect').count(), 0, 'the targets show under the window, not behind a button');
     assert.equal(await preview.locator('#c-files, #ir-files, #window-output').count(), 0,
       'the preview shows no raw Kryon-profile C or ZIR dumps');
     await app.locator('canvas').waitFor({ timeout: 180000 });
@@ -97,38 +98,53 @@ try {
     assert.ok(pixels.painted > 0 && pixels.painted === pixels.width * pixels.height, JSON.stringify(pixels));
     assert.notEqual((await app.locator('body').textContent()).trim(), '1');
     console.log('Real window.zi runs as an embedded Kryon canvas, not portable scalar output:', pixels);
+    // Open in window runs the C-generated program as one owned process whose
+    // real OS window maps on this private display.
+    const windows = () => execFileSync('xwininfo', ['-root', '-tree'], { encoding: 'utf8' })
+      .split('\n').filter(line => /"Window": \("window" "window"\)/.test(line)).length;
+    const owned = () => {
+      try { return execFileSync('pgrep', ['-f', `${runtime}/profile/.*/window-c/`], { encoding: 'utf8' }).trim().split('\n').filter(Boolean); }
+      catch { return []; }
+    };
     // Another installed extension may leave a quick input open over the pane.
     const dismiss = () => preview.page().keyboard.press('Escape');
-    // Inspect Targets opens the Run pane for the same file without running it
-    // on the portable runtime, which has no window host.
-    await dismiss();
-    await preview.locator('#inspect').click();
-    let inspected;
-    for (let attempt = 0; attempt < 300 && !inspected; attempt++) {
-      for (const context of browser.contexts()) for (const page of context.pages()) for (const frame of page.frames()) {
-        if (await frame.locator('#screen').count() &&
-            /Kryon program opens its own window/.test(await frame.locator('#screen').textContent())) inspected = frame;
-      }
-      if (!inspected) await app.waitForTimeout(100);
+    assert.equal(await preview.locator('#open-window').textContent(), 'Open in window');
+    for (const round of [1, 2]) {
+      await dismiss();
+      await preview.locator('#open-window').click();
+      await preview.waitForFunction(() => document.querySelector('#window-status').textContent === 'Window open', null, { timeout: 180000 });
+      for (let attempt = 0; attempt < 100 && windows() !== 1; attempt++) await app.waitForTimeout(100);
+      assert.equal(windows(), 1, `round ${round}: exactly one mapped Window`);
+      assert.equal(owned().length, 1, `round ${round}: exactly one owned window process`);
     }
-    assert.ok(inspected, 'Inspect Targets must open the Run pane with the Kryon program notice');
-    assert.notEqual((await inspected.locator('#screen').textContent()).trim(), '1');
-    // The same clean target tabs as any .zi file, showing only window.zi's own code.
-    await inspected.waitForFunction(() => !document.querySelector('#status').textContent.includes('…') &&
-      document.querySelectorAll('#tabs [role=tab]').length === 5 &&
+    windowProcess = owned()[0];
+    console.log('Open in window mapped one real "Window"; opening it again replaced the owned process.');
+    // The target views sit under the live window in the same pane.
+    await preview.waitForFunction(() => document.querySelectorAll('#tabs [role=tab]').length === 4 &&
       !document.querySelector('#tabs').textContent.includes('…'), null, { timeout: 600000 });
-    assert.deepEqual(await inspected.locator('#tabs').getByRole('tab').allTextContents(), ['C', 'Go', 'ZIR', 'Wasm', 'Native']);
-    await inspected.locator('#tabs').getByRole('tab', { name: 'C', exact: true }).click();
-    await inspected.locator('#views').getByRole('tab', { name: 'Source', exact: true }).click();
-    assert.equal(await inspected.locator('#own-files').inputValue(), 'window.c');
-    assert.match(await inspected.locator('#code').textContent(), /window_main/);
-    const picker = inspected.locator('#dependency-files');
+    assert.deepEqual((await preview.locator('#tabs').getByRole('tab').allTextContents()).map(name => name.replace(' ✕', '')),
+      ['C', 'Go', 'Wasm', 'Native']);
+    await preview.locator('#tabs').getByRole('tab', { name: 'C', exact: true }).click();
+    assert.deepEqual(await preview.locator('#views').getByRole('tab').allTextContents(),
+      ['Source', 'LIR', 'Optimized', 'ZX', 'C', 'Assembly', 'Binary']);
+    assert.match(await preview.locator('#code').textContent(), /App\.Run|main ::/);
+    await preview.locator('#views').getByRole('tab', { name: 'C', exact: true }).click();
+    // window.c comes first; a picker appears only when the program has more own files.
+    if (await preview.locator('#own-files').count()) assert.equal(await preview.locator('#own-files').inputValue(), 'window.c');
+    const own = await preview.locator('#code').textContent();
+    assert.match(own, /from window\.zi[\s\S]*\bmain\b/);
+    // A dependency module is read only when picked.
+    const picker = preview.locator('#dependency-files');
     assert.match(await picker.locator('option').first().textContent(), /^Dependencies \(\d+ files · /);
-    await picker.selectOption('app.c');
-    await inspected.locator('#code').filter({ hasText: /app_Run/ }).waitFor({ timeout: 60000 });
+    const names = await picker.locator('option').allTextContents();
+    await picker.selectOption(names.includes('app.c') ? 'app.c' : names[1]);
+    await preview.waitForFunction((text) => {
+      const shown = document.querySelector('#code').textContent;
+      return shown !== text && !shown.startsWith('Loading ') && /Generated by zi2c from/.test(shown);
+    }, own, { timeout: 60000 });
     await picker.selectOption('');
-    assert.match(await inspected.locator('#code').textContent(), /window_main/);
-    console.log('Inspect Targets showed C, Go, ZIR, Wasm and Native with window.c first and Kryon modules under Dependencies.');
+    assert.equal(await preview.locator('#code').textContent(), own);
+    console.log('Under the window: C, Go, Wasm and Native with the shared stages, window.c first and Kryon modules under Dependencies.');
   } else {
     await app.locator('canvas').waitFor();
     const pixels = await app.locator('canvas').first().evaluate(canvas=>({width:canvas.width,height:canvas.height}));
@@ -181,6 +197,17 @@ try {
   if(child && child.exitCode===null) {
     child.kill('SIGTERM');
     await new Promise(resolve => child.once('exit', resolve));
+  }
+  if (windowProcess) {
+    // Closing VS Code ends the window it opened.
+    let alive = true;
+    for (let attempt = 0; attempt < 50 && alive; attempt++) {
+      try { process.kill(Number(windowProcess), 0); await new Promise(resolve => setTimeout(resolve, 100)); }
+      catch { alive = false; }
+    }
+    if (alive) { try { process.kill(Number(windowProcess), 'SIGKILL'); } catch {} }
+    assert.equal(alive, false, 'the owned window process must not outlive VS Code');
+    console.log('The owned window process ended with VS Code.');
   }
   await fs.rm(runtime,{recursive:true,force:true});
 }

@@ -5,6 +5,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { parse } = require('@iarna/toml');
 const { manifestPath, projectRoot, runCommand, safeEnvironment } = require('./preview.cjs');
+const { elfListing } = require('./disassembly.cjs');
 
 const TARGETS = [
   { id: 'c', label: 'C' },
@@ -371,6 +372,10 @@ function rank(file) {
   return 2;
 }
 
+function cut(text, file) {
+  return text.length > VIEW_TEXT_LIMIT ? `${text.slice(0, VIEW_TEXT_LIMIT)}\n… ${text.length - VIEW_TEXT_LIMIT} more characters not shown; the ELF is ${file.replace(/\.disasm$/, '.elf')}\n` : text;
+}
+
 async function readText(file, limit = VIEW_TEXT_LIMIT) {
   const handle = await fs.open(file, 'r');
   try {
@@ -416,12 +421,12 @@ async function binaryFile(file, name = path.basename(file)) {
   return { name, binary: { path: file, size: (await fs.stat(file)).size } };
 }
 
-function view(id, label, files, caption = '') {
-  return { id, label, ok: true, message: '', caption, files };
+function view(id, label, files) {
+  return { id, label, ok: true, message: '', files };
 }
 
 function failedView(id, label, message) {
-  return { id, label, ok: false, message, caption: '', files: [] };
+  return { id, label, ok: false, message, files: [] };
 }
 
 function problem(result, what) {
@@ -515,7 +520,7 @@ async function cAssembly(context) {
   const { mine, dependencies } = splitOwn(sources, context.file, await ownModules(context.file), nameOf);
   const files = await mapLimit(mine, 4, async (entry) => ({ name: nameOf(entry), text: await compile(entry) }));
   for (const entry of dependencies) files.push(dependencyFile(nameOf(entry), () => compile(entry)));
-  return view('assembly', 'Assembly', files, `${compiler} -S, with the flags ziran compile-commands reports`);
+  return view('assembly', 'Assembly', files);
 }
 
 async function buildC(context) {
@@ -527,10 +532,11 @@ async function buildC(context) {
     const built = await runCommand(command, buildArgs('c', file, output, paths, project), cwd);
     if (built.code !== 0) return { ok: false, message: problem(built, 'ziran build'), views: [] };
   }
-  const views = [view('source', 'Source', await textFiles(output, file)), await cAssembly(context)];
+  const views = [...await pipelineViews(context), view('generated', 'C', await textFiles(output, file)),
+    await cAssembly(context)];
   const program = path.join(output, moduleName(file));
   if (exe?.code === 0 && await exists(program)) {
-    views.push(view('binary', 'Binary', [await binaryFile(program)], `${cCompiler()} executable`));
+    views.push(view('binary', 'Binary', [await binaryFile(program)]));
   } else {
     views.push(failedView('binary', 'Binary', hasMain ? problem(exe, 'ziran build --exe') : noMain));
   }
@@ -542,7 +548,7 @@ async function buildGo(context) {
   const name = moduleName(file);
   const built = await runCommand(command, buildArgs('go', file, output, paths, project, { exe: hasMain }), cwd);
   if (built.code !== 0) return { ok: false, message: problem(built, 'ziran build'), views: [] };
-  const views = [view('source', 'Source', await textFiles(output, file))];
+  const views = [...await pipelineViews(context), view('generated', 'Go', await textFiles(output, file))];
   if (!(await exists(path.join(output, 'go.mod')))) {
     await fs.writeFile(path.join(output, 'go.mod'), 'module ziranrun\n\ngo 1.21\n');
   }
@@ -561,10 +567,9 @@ async function buildGo(context) {
       failedView('binary', 'Binary', message));
     return { ok: true, message: '', views };
   }
-  views.push(view('assembly', 'Assembly', [{ name: `${name}.s`, text: await readText(listing) }],
-    'go build -gcflags=-S: Go assembly'));
+  views.push(view('assembly', 'Assembly', [{ name: `${name}.s`, text: await readText(listing) }]));
   views.push(hasMain && await exists(program) ?
-    view('binary', 'Binary', [await binaryFile(program)], 'go build executable') :
+    view('binary', 'Binary', [await binaryFile(program)]) :
     failedView('binary', 'Binary', noMain));
   return { ok: true, message: '', views };
 }
@@ -586,7 +591,7 @@ async function buildWasm(context) {
     module.applyNames();
     text = module.toText({ foldExprs: false, inlineExport: false });
   } finally { module.destroy(); }
-  return { ok: true, message: '', views: [
+  return { ok: true, message: '', views: [...await pipelineViews(context),
     view('text', 'WAT', [{ name: `${name}.wat`, text }]),
     view('binary', 'Binary', [await binaryFile(artifact)]),
   ] };
@@ -609,122 +614,143 @@ async function toolStep(tool, label, stage, args, cwd) {
   if (result.code !== 0) throw new Error(`${stage}: ${problem(result, label)}`);
 }
 
+function missingTools(names) {
+  const missing = names.join(' and ');
+  const plural = names.length > 1;
+  return `${missing} ${plural ? 'were' : 'was'} not found beside the ziran command or in a Ziran checkout; build ${plural ? 'them' : 'it'} there with \`make\`.`;
+}
+
 // The direct-assembly tools: zi2zx lowers checked ZIR to LIR and linked ZX
 // and lists verified ZX; zx2native lowers ZX to its map and ELF. Each is
-// found on its own. Until Ziran's rename lands everywhere, a toolchain that
-// still has only zi2asm runs every stage through it.
+// found on its own; old tool names are not fallbacks.
 async function nativeTools(command, file, folders) {
   const zx2native = await ziranTool(command, 'zx2native', file, folders);
   // One checkout's tools agree on the ZX revision; prefer zi2zx beside zx2native.
   const beside = zx2native && path.join(path.dirname(zx2native), 'zi2zx');
   const zi2zx = beside && await executable(beside) ? beside : await ziranTool(command, 'zi2zx', file, folders);
-  if (zi2zx && zx2native) {
-    return { lower: { tool: zi2zx, label: 'zi2zx' }, native: { tool: zx2native, label: 'zx2native' }, zxInput: [] };
-  }
-  const zi2asm = await ziranTool(command, 'zi2asm', file, folders);
-  if (zi2asm) {
-    const tool = { tool: zi2asm, label: 'zi2asm' };
-    return { lower: tool, native: tool, zxInput: ['--input', 'zx'] };
-  }
-  const missing = [zi2zx ? '' : 'zi2zx', zx2native ? '' : 'zx2native'].filter(Boolean).join(' and ');
-  return { missing: `${missing} ${missing.includes(' and ') ? 'were' : 'was'} not found beside the ziran command or in a Ziran checkout; build ${missing.includes(' and ') ? 'them' : 'it'} there with \`make\`.` };
+  return { zi2zx, zx2native };
 }
 
-// Ziran's direct-assembly inspection pipeline (ASSEMBLY/vscode-inspection.md):
-// source -> checked .zir -> LIR -> linked ZX -> direct ELF -> objdump.
+const PIPELINE_STAGES = [['lowered', 'LIR'], ['optimized', 'Optimized'], ['zx', 'ZX']];
+
+// The stages every target shares: source -> checked .zir -> LIR -> linked
+// ZX (ASSEMBLY/vscode-inspection.md). Each completed stage is a view; the
+// stage that fails and those after it show its reason.
+async function buildPipeline(context) {
+  const { file, output, hasMain, noMain } = context;
+  const views = [view('source', 'Source', [{ name: path.basename(file), text: await readText(file) }])];
+  const finish = (message, zx = null) => {
+    for (const [id, label] of PIPELINE_STAGES.slice(views.length - 1)) views.push(failedView(id, label, message));
+    return { views, zx, message };
+  };
+  if (!hasMain) return finish(noMain);
+  const { zi2zx } = await nativeTools(context.command, file, context.folders);
+  if (!zi2zx) return finish(missingTools(['zi2zx']));
+  const at = (name) => path.join(output, name);
+  try {
+    await cleanDirectory(output, []);
+    const { entry, input } = await checkedProgram(context, at('checked'));
+    const checked = ['--root', path.dirname(input), '--entry', entry];
+    const zx = at('final.zx');
+    await toolStep(zi2zx, 'zi2zx', 'lowered instruction listing', [...checked,
+      '--emit', 'lir', '-o', at('lowered.lir'), input], output);
+    views.push(view('lowered', 'LIR', [{ name: 'lowered.lir', text: await readText(at('lowered.lir')) }]));
+    await toolStep(zi2zx, 'zi2zx', 'optimization counters', [...checked, '--opt',
+      '--emit', 'opt-report', '-o', at('optimization.json'), input], output);
+    await toolStep(zi2zx, 'zi2zx', 'linked ZX instructions', [...checked, '--emit', 'zx', '-o', zx, input], output);
+    await toolStep(zi2zx, 'zi2zx', 'verified ZX instruction listing',
+      ['--emit', 'lir', '-o', at('optimized.lir'), zx], output);
+    views.push(view('optimized', 'Optimized', [
+      { name: 'optimized.lir', text: await readText(at('optimized.lir')) },
+      { name: 'optimization.json', text: await readText(at('optimization.json')) }]));
+    views.push(view('zx', 'ZX', [await binaryFile(zx)]));
+    return { views, zx, message: '' };
+  } catch (error) {
+    return finish(error.message);
+  }
+}
+
+// Each target's own copy of the shared stage views.
+async function pipelineViews(context) {
+  const { views } = await context.pipeline();
+  return views.map((item) => ({ ...item, files: item.files.map((file) =>
+    file.binary ? { ...file, binary: { ...file.binary } } : { ...file }) }));
+}
+
+// The direct native backend: zx2native lowers the pipeline's ZX to the native
+// map and ELF; Assembly lists the whole ELF and Binary shows its bytes.
 async function buildNative(context) {
   const { command, file, output, hasMain, noMain } = context;
   if (!hasMain) return { ok: false, message: noMain, views: [] };
   const tools = await nativeTools(command, file, context.folders);
-  if (tools.missing) return { ok: false, message: tools.missing, views: [] };
-  try {
-    const { entry, input } = await checkedProgram(context, path.join(output, 'checked'));
-    const at = (name) => path.join(output, name);
-    const names = (await listFiles(path.dirname(input))).filter(name => name.endsWith('.zir'));
-    const inspect = async (name) => {
-      const listing = at(`${name}.txt`);
-      const inspected = await runToFile(command, ['inspect', path.join(path.dirname(input), name)],
-        context.cwd, listing);
-      if (inspected.code !== 0) throw new Error(`ZIR listing: ${problem(inspected, 'ziran inspect')}`);
-      return readText(listing);
-    };
-    const { mine, dependencies } = splitOwn(names, file, await ownModules(file), (name) => name);
-    const checkedFiles = [];
-    for (const name of mine) checkedFiles.push({ name, text: await inspect(name) });
-    for (const name of dependencies) {
-      checkedFiles.push(dependencyFile(name, () => inspect(name).catch((error) => error.message)));
-    }
-    const checked = ['--root', path.dirname(input), '--entry', entry];
-    const zx = at('final.zx');
-    const { lower, native, zxInput } = tools;
-    await toolStep(lower.tool, lower.label, 'lowered instruction listing', [...checked,
-      '--emit', 'lir', '-o', at('lowered.lir'), input], output);
-    await toolStep(lower.tool, lower.label, 'optimization counters', [...checked, '--opt',
-      '--emit', 'opt-report', '-o', at('optimization.json'), input], output);
-    await toolStep(lower.tool, lower.label, 'linked ZX instructions', [...checked,
-      '--emit', 'zx', '-o', zx, input], output);
-    await toolStep(lower.tool, lower.label, 'verified ZX instruction listing',
-      [...zxInput, '--emit', 'lir', '-o', at('optimized.lir'), zx], output);
-    await toolStep(native.tool, native.label, 'final native map',
-      [...zxInput, '--emit', 'map', '-o', at('final.map.json'), zx], output);
-    await toolStep(native.tool, native.label, 'final ELF',
-      [...zxInput, '--emit', 'elf', '-o', at('final.elf'), zx], output);
-    const map = JSON.parse(await fs.readFile(at('final.map.json'), 'utf8'));
-    const address = map.image?.text_virtual_address;
-    if (!Number.isInteger(address) || address < 0) throw new Error('final native map: image.text_virtual_address is missing');
-    const body = at('final.objdump');
-    const disassembled = await runToFile('objdump', ['-d', 'final.elf'], output, body);
-    if (disassembled.code !== 0) throw new Error(`final disassembly: ${problem(disassembled, 'objdump')}`);
-    const disassembly = `# Ziran direct-assembly final disassembly\n` +
-      `# map identity: ${map.identity?.algorithm || ''} ${map.identity?.scope || ''} ${map.identity?.digest || ''}\n` +
-      `# image.text_virtual_address: 0x${address.toString(16)} (${address})\n` +
-      `# Addresses are ELF virtual addresses; subtract the text address for text-relative offsets.\n` +
-      `# command: objdump -d final.elf\n\n` + await readText(body);
-    return { ok: true, message: '', views: [
-      view('source', 'Source', [{ name: path.basename(file), text: await readText(file) }]),
-      view('checked', 'ZIR', checkedFiles),
-      view('lowered', 'LIR', [{ name: 'lowered.lir', text: await readText(at('lowered.lir')) }]),
-      view('optimized', 'Optimized', [
-        { name: 'optimized.lir', text: await readText(at('optimized.lir')) },
-        { name: 'optimization.json', text: await readText(at('optimization.json')) }],
-        'Verified instructions read from final.zx; optimization runs before ZX is written'),
-      view('zx', 'ZX', [await binaryFile(zx)],
-        'Linked ZX instructions, used directly for target lowering'),
-      view('disassembly', 'Assembly', [{ name: 'final.disasm', text: disassembly }],
-        'objdump of the ELF lowered directly from verified ZX; no generated C or Go'),
-      view('binary', 'Binary', [await binaryFile(at('final.elf'))],
-        'The ELF lowered directly from verified ZX; host services use target-owned bindings'),
-    ] };
-  } catch (error) {
-    return { ok: false, message: `Native inspection failed during ${error.message}`, views: [] };
+  const missing = [tools.zi2zx ? '' : 'zi2zx', tools.zx2native ? '' : 'zx2native'].filter(Boolean);
+  if (missing.length) return { ok: false, message: missingTools(missing), views: [] };
+  const views = await pipelineViews(context);
+  const { zx, message } = await context.pipeline();
+  if (!zx) {
+    return { ok: true, message: '', views: [...views, failedView('assembly', 'Assembly', message),
+      failedView('binary', 'Binary', message)] };
   }
+  const at = (name) => path.join(output, name);
+  try {
+    await toolStep(tools.zx2native, 'zx2native', 'final native map',
+      ['--emit', 'map', '-o', at('final.map.json'), zx], output);
+    await toolStep(tools.zx2native, 'zx2native', 'final ELF',
+      ['--emit', 'elf', '-o', at('final.elf'), zx], output);
+    const map = JSON.parse(await fs.readFile(at('final.map.json'), 'utf8'));
+    const listing = await elfListing(at('final.elf'), map, await ownModules(file), output);
+    const binary = await binaryFile(at('final.elf'));
+    binary.binary.regions = listing.regions;
+    binary.binary.filterLabel = listing.filterLabel;
+    views.push(view('assembly', 'Assembly', [{ name: 'final.disasm', text: cut(listing.text, at('final.disasm')),
+      filtered: cut(listing.program, at('final.disasm')), filterLabel: listing.filterLabel }]),
+    view('binary', 'Binary', [binary]));
+  } catch (error) {
+    views.push(failedView('assembly', 'Assembly', error.message), failedView('binary', 'Binary', error.message));
+  }
+  return { ok: true, message: '', views };
 }
 
-// Any other target: the generated source only.
+// Any other target: the shared stages, then the generated source.
 async function buildSource(context, target) {
   const { command, file, output, paths, project, cwd } = context;
   const built = await runCommand(command, buildArgs(target, file, output, paths, project), cwd);
   if (built.code !== 0) return { ok: false, message: problem(built, 'ziran build'), views: [] };
-  return { ok: true, message: '', views: [view('source', 'Source', await textFiles(output, file))] };
+  const label = TARGETS.find((item) => item.id === target)?.label || target;
+  return { ok: true, message: '', views: [...await pipelineViews(context),
+    view('generated', label, await textFiles(output, file))] };
 }
 
 const BUILDERS = { c: buildC, go: buildGo, wasm: buildWasm, native: buildNative };
 
-// Build FILE for TARGET under WORKDIRECTORY and return its views: generated
-// source, assembly and the binary it produces, each a list of files.
-async function buildTarget(command, target, file, workDirectory, paths, options = {}) {
-  const output = path.join(workDirectory, target);
-  const work = path.join(workDirectory, `${target}.inspect`);
-  await cleanDirectory(output);
-  await fs.mkdir(work, { recursive: true });
+async function targetContext(command, file, output, paths, options = {}) {
   const project = await packageRoot(file);
   let hasMain = options.hasMain;
   if (hasMain === undefined) {
     try { hasMain = mainLine(await fs.readFile(file, 'utf8')) >= 0; } catch { hasMain = false; }
   }
   const noMain = options.noMain || noMainMessage(file, hasMain ? [] : await importingPrograms(file));
-  const context = { command, file, output, work, paths, project: Boolean(project),
+  return { command, file, output, paths, project: Boolean(project),
     cwd: project || path.dirname(file), hasMain, noMain, folders: options.folders || [] };
+}
+
+// The shared stages for FILE, built once under DIRECTORY for every target.
+async function startPipeline(command, file, directory, paths, options = {}) {
+  return buildPipeline(await targetContext(command, file, directory, paths, options));
+}
+
+// Build FILE for TARGET under WORKDIRECTORY and return its views: the shared
+// stages, then the target's generated code, assembly and binary. OPTIONS.pipeline
+// is a shared startPipeline result; without one the target builds its own.
+async function buildTarget(command, target, file, workDirectory, paths, options = {}) {
+  const output = path.join(workDirectory, target);
+  const work = path.join(workDirectory, `${target}.inspect`);
+  await cleanDirectory(output);
+  await fs.mkdir(work, { recursive: true });
+  const context = { ...await targetContext(command, file, output, paths, options), work };
+  let pipeline = options.pipeline;
+  context.pipeline = () => (pipeline ||= startPipeline(command, file,
+    path.join(workDirectory, `${target}.pipeline`), paths, context));
   try {
     const builder = BUILDERS[target];
     return { id: target, ...(builder ? await builder(context) : await buildSource(context, target)) };
@@ -737,4 +763,4 @@ module.exports = {
   DEFAULT_TARGETS, TARGETS, assemblyArguments, buildArgs, buildTarget, bundleArgs, cCompiler,
   commandStd, enabledTargets, importedPackages, importingPrograms, irArgs, listFiles, mainLine,
   modulePaths, noMainMessage, ownModules, packageModulePaths, packageRoot, sourceArgs, splitOwn,
-  ziranCommand, ziranTool };
+  startPipeline, ziranCommand, ziranTool };

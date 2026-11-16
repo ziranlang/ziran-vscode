@@ -48,11 +48,6 @@
         "command": "kryon.preview",
         "title": "Kryon: Preview",
         "icon": "$(play)"
-      },
-      {
-        "command": "ziran.inspect",
-        "title": "Ziran: Inspect Targets",
-        "icon": "$(list-tree)"
       }
     ],
     "menus": {
@@ -66,11 +61,6 @@
           "command": "kryon.preview",
           "when": "resourceExtname == .zi && ziran.kryonProject",
           "group": "navigation@2"
-        },
-        {
-          "command": "ziran.inspect",
-          "when": "resourceExtname == .zi && ziran.kryonProject",
-          "group": "navigation@3"
         }
       ],
       "commandPalette": [
@@ -110,11 +100,11 @@
               "Generated Go, Go's own (Plan 9) assembly, and the executable",
               "WebAssembly text and the .wasm binary",
               "Legacy setting alias for Native; ZX is now a stage within Native, not a separate target",
-              "Direct native pipeline: source, ZIR, LIR, optimized ZX, target assembly and the ELF binary"
+              "Direct native lowering of ZX: the whole ELF as assembly and as bytes"
             ]
           },
           "uniqueItems": true,
-          "description": "Targets the Run pane builds and inspects. Each shows its source, assembly and binary in tabs; the pane's checkboxes update this setting."
+          "description": "Targets the Run pane and the Kryon preview build and inspect. Each shows the shared stages (Source, LIR, Optimized, ZX) and then its own output in tabs; the checkboxes update this setting."
         },
         "ziran.packagePaths": {
           "type": "object",

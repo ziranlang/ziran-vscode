@@ -73,31 +73,33 @@ try {
     const native = run.locator('#tabs').getByRole('tab', { name: 'Native', exact: true });
     await native.click({ timeout: 180000 });
     assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(),
-      ['Source', 'ZIR', 'LIR', 'Optimized', 'ZX', 'Assembly', 'Binary']);
+      ['Source', 'LIR', 'Optimized', 'ZX', 'Assembly', 'Binary']);
     const view = name => run.locator('#views').getByRole('tab', { name, exact: true });
-    await view('ZIR').click();
-    assert.match(await run.locator('#code').textContent(), /function main/);
     await view('LIR').click();
     assert.match(await run.locator('#code').textContent(), /^lir \d+ entry/);
     await view('ZX').click();
     await run.waitForFunction(() => document.querySelector('#hex-title').textContent.startsWith('final.zx'));
     await view('Assembly').click();
-    assert.match(await run.locator('#code').textContent(), /<hello:main>:[\s\S]*syscall/);
+    await run.locator('#program-only').uncheck();
+    assert.match(await run.locator('#code').textContent(), /^ELF header\n[\s\S]*<hello:main>:[\s\S]*syscall/);
+    await run.locator('#program-only').check();
+    assert.match(await run.locator('#code').textContent(), /^<hello:main>:\n/);
+    assert.doesNotMatch(await run.locator('#code').textContent(), /ELF header|<runtime/);
+    await run.locator('#program-only').uncheck();
     await view('Binary').click();
-    await run.waitForFunction(() => /hello:main at 0x[0-9a-f]+ \(\.text\)/
-      .test(document.querySelector('#hex-code').textContent));
-    assert.equal(await run.locator('#hex-headers').isChecked(), false);
-    await run.locator('#hex-headers').check();
-    await run.waitForFunction(() => /^00000000  7f 45 4c 46 /
+    await run.waitForFunction(() => /^── ELF header · 0x0–0x40 · 64 bytes\n00000000  7f 45 4c 46 /
       .test(document.querySelector('#hex-rows').textContent));
+    await run.locator('#program-only').check();
+    await run.waitForFunction(() => /^── hello:main · 0x/.test(document.querySelector('#hex-rows').textContent));
     assert.equal(await fs.readFile(path.join(runtime, 'activated'), 'utf8'), installed || repo);
     await fs.writeFile(path.join(runtime, 'done'), '');
-    console.log(`Local installed VS Code Native test: ${entry}; source, ZIR, LIR, ZX, syscall assembly and main-first Binary/ELF header views passed.`);
+    console.log(`Local installed VS Code Native test: ${entry}; Source, LIR, Optimized, ZX, full and program-only Assembly and Binary views passed.`);
   } else if (real) {
     await run.waitForFunction(() => document.querySelector('[role=tab]'), null, {timeout:180000});
-    for (const tab of ['C', 'Go', 'ZIR']) {
-      await run.getByRole('tab', {name: tab, exact: true}).click({timeout:180000});
-      const extension = {C:'c', Go:'go', ZIR:'zir'}[tab];
+    for (const tab of ['C', 'Go']) {
+      await run.locator('#tabs').getByRole('tab', {name: tab, exact: true}).click({timeout:180000});
+      await run.locator('#views').getByRole('tab', {name: tab, exact: true}).click({timeout:180000});
+      const extension = {C:'c', Go:'go'}[tab];
       await run.locator('#code').filter({hasText: /function|#include|package/}).waitFor({timeout:180000});
       // The program's own module is shown first; dependencies sit in their own picker.
       const own = run.locator('#own-files');
@@ -113,7 +115,7 @@ try {
     assert.match(status, /^Up to date/, `${status}\n${problems}`);
     assert.equal(await fs.readFile(path.join(runtime, 'activated'), 'utf8'), installed || repo);
     await fs.writeFile(path.join(runtime, 'done'), '');
-    console.log(`Local VS Code test: ${entry} ran (${status.trim()}); C, Go and ZIR resolved with real project dependencies; workspace ${process.env.ZIRAN_PREVIEW_WORKSPACE || project}.`);
+    console.log(`Local VS Code test: ${entry} ran (${status.trim()}); C and Go resolved with real project dependencies; workspace ${process.env.ZIRAN_PREVIEW_WORKSPACE || project}.`);
   } else {
     const tab = (name) => run.locator('#tabs').getByRole('tab', { name, exact: true });
     const view = (name) => run.locator('#views').getByRole('tab', { name, exact: true });
@@ -123,34 +125,43 @@ try {
     const firstRow = async (pattern) => run.waitForFunction((source) =>
       new RegExp(source).test(document.querySelector('#hex-rows').textContent.split('\n')[0]),
       pattern.source, { timeout: 60000 });
+    const secondRow = async (pattern) => run.waitForFunction((source) =>
+      new RegExp(source).test(document.querySelector('#hex-rows').textContent.split('\n')[1] || ''),
+      pattern.source, { timeout: 60000 });
+    const pipeline = ['Source', 'LIR', 'Optimized', 'ZX'];
     await run.waitForFunction(() => document.querySelector('#screen').textContent === 'Hello, World!\n');
     await tab('Native').waitFor({ timeout: 180000 });
     await run.waitForFunction(() => !document.querySelector('#status').textContent.includes('…'), null, { timeout: 180000 });
-    assert.deepEqual(await run.locator('#tabs').getByRole('tab').allTextContents(), ['C', 'Go', 'ZIR', 'Wasm', 'Native']);
+    // No ZIR tab: every target shows the shared stages, then its own output.
+    assert.deepEqual(await run.locator('#tabs').getByRole('tab').allTextContents(), ['C', 'Go', 'Wasm', 'Native']);
     assert.deepEqual(await run.locator('#targets input').count(), 4);
+    assert.equal(await run.locator('#caption').count(), 0);
 
     await tab('C').click();
-    assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(), ['Source', 'Assembly', 'Binary']);
+    assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(), [...pipeline, 'C', 'Assembly', 'Binary']);
+    assert.match(await code(), /Hello, World!/);
+    await view('LIR').click();
+    assert.match(await code(), /^lir \d+ entry/);
+    await view('C').click();
     assert.match(await code(), /Hello, World!/);
     await view('Assembly').click();
     assert.match(await code(), /\.text|\.section/);
-    assert.match(await run.locator('#caption').textContent(), /-S, with the flags ziran compile-commands reports/);
     await view('Binary').click();
-    await run.waitForFunction(() => /main at 0x[0-9a-f]+ \(\.text\)/
-      .test(document.querySelector('#hex-code').textContent));
-    const cStart = parseInt((await run.locator('#hex-code').textContent()).match(/0x([0-9a-f]+)/)[1], 16);
-    await firstRow(new RegExp('^' + cStart.toString(16).padStart(8, '0') + '  '));
-    assert.equal(await run.locator('#hex-headers').isChecked(), false);
+    // The whole file, each region under its label; the toggle keeps only code and data.
+    await firstRow(/^── ELF header · 0x0–0x40 · 64 bytes$/);
+    await secondRow(/^00000000  7f 45 4c 46 /);
+    assert.equal(await run.locator('#program-only').isChecked(), false);
     assert.match(await run.locator('#hex-title').textContent(), /^hello · [\d,.]+ bytes$/);
+    await run.locator('#program-only').check();
+    await firstRow(/^── \.[a-z_.]+ · 0x[0-9a-f]+–0x[0-9a-f]+ · \d+ bytes$/);
+    assert.doesNotMatch(await rows(), /ELF header|program headers/);
+    await run.locator('#program-only').uncheck();
 
     await tab('Go').click();
     await view('Assembly').click();
     assert.match(await code(), /STEXT/);
     await view('Binary').click();
-    await run.waitForFunction(() => /main\.main at 0x[0-9a-f]+ \(\.text\)/
-      .test(document.querySelector('#hex-code').textContent));
-    const goStart = parseInt((await run.locator('#hex-code').textContent()).match(/0x([0-9a-f]+)/)[1], 16);
-    await firstRow(new RegExp('^' + goStart.toString(16).padStart(8, '0') + '  '));
+    await firstRow(/^── ELF header · 0x0–0x40 · 64 bytes$/);
     // A megabyte-sized binary scrolls without drawing every row.
     const total = await run.evaluate(() => document.querySelector('#hex-spacer').style.height);
     assert.ok(parseFloat(total) > 100000, total);
@@ -160,35 +171,36 @@ try {
       const lines = document.querySelector('#hex-rows').textContent.split('\n');
       return parseInt(lines[0], 16) > 0x100000 && !lines.some((line) => line.includes('··'));
     }, null, { timeout: 60000 });
+    // Going to an offset the filter hides shows the whole file again.
+    await run.locator('#program-only').check();
     await run.locator('#hex-goto').fill('40');
     await run.locator('#hex-goto').press('Enter');
     await firstRow(/^00000040  /);
-    assert.equal(await run.locator('#hex-headers').isChecked(), true);
-    await run.locator('#hex-headers').uncheck();
-    await firstRow(new RegExp('^' + goStart.toString(16).padStart(8, '0') + '  '));
+    assert.equal(await run.locator('#program-only').isChecked(), false);
 
-    await tab('ZIR').click();
-    assert.match(await code(), /function main/);
     await tab('Wasm').click();
+    assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(), [...pipeline, 'WAT', 'Binary']);
+    await view('WAT').click();
     assert.match(await code(), /\(module/);
     await view('Binary').click();
-    await run.waitForFunction(() => /code starts at 0x[0-9a-f]+ \(Wasm code section\)/
-      .test(document.querySelector('#hex-code').textContent));
-    const wasmStart = parseInt((await run.locator('#hex-code').textContent()).match(/0x([0-9a-f]+)/)[1], 16);
-    await firstRow(new RegExp('^' + wasmStart.toString(16).padStart(8, '0') + '  '));
-    await run.locator('#hex-headers').check();
-    await firstRow(/^00000000  00 61 73 6d /);
+    await firstRow(/^── Wasm header · 0x0–0x8 · 8 bytes$/);
+    await secondRow(/^00000000  00 61 73 6d /);
+    await run.locator('#program-only').check();
+    await firstRow(/^── code section · 0x/);
     await tab('Native').click();
-    assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(),
-      ['Source', 'ZIR', 'LIR', 'Optimized', 'ZX', 'Assembly', 'Binary']);
+    assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(), [...pipeline, 'Assembly', 'Binary']);
+    await view('Source').click();
     assert.match(await code(), /Hello, World!/);
-    await view('LIR').click();
-    assert.match(await code(), /^lir \d+ entry/);
+    await view('Assembly').click();
+    assert.match(await code(), /^<hello:main>:\n[\s\S]*\tret/);
+    await run.locator('#program-only').uncheck();
+    assert.match(await code(), /^ELF header\n[\s\S]*\nProgram headers\n[\s\S]*<hello:main>:[\s\S]*\tsyscall/);
+    assert.doesNotMatch(await code(), /^#|objdump of the ELF|map identity/m);
     await view('Binary').click();
-    await run.waitForFunction(() => /hello:main at 0x[0-9a-f]+ \(\.text\)/
-      .test(document.querySelector('#hex-code').textContent));
-    await run.locator('#hex-headers').check();
-    await firstRow(/^00000000  7f 45 4c 46 /);
+    await firstRow(/^── ELF header · 0x0–0x40 · 64 bytes$/);
+    await secondRow(/^00000000  7f 45 4c 46 /);
+    await run.locator('#program-only').check();
+    await firstRow(/^── hello:main · 0x/);
 
     await tab('Wasm').click();
     await fs.writeFile(path.join(runtime, 'edit'), 'main :: () { print("Saved!\\n"); }\n');
@@ -200,9 +212,8 @@ try {
       null, { timeout: 180000 });
     await tab('Wasm').click();
     await view('Binary').click();
-    assert.equal(await run.locator('#hex-headers').isChecked(), true);
-    await run.waitForFunction(() => /code starts at 0x[0-9a-f]+ \(Wasm code section\)/
-      .test(document.querySelector('#hex-code').textContent));
+    assert.equal(await run.locator('#program-only').isChecked(), true);
+    await firstRow(/^── code section · 0x/);
 
     // A module without main: a clear message naming its importing program.
     const noMain = "frame.zi has no main; it's a module. Run a program that imports it, such as desktop_frame.zi.";
@@ -226,7 +237,7 @@ try {
 
     assert.equal(await fs.readFile(path.join(runtime, 'activated'), 'utf8'), installed || repo);
     await fs.writeFile(path.join(runtime, 'done'), '');
-    console.log('Local VS Code test: hello-world execution; C, Go, ZIR, Wasm and unified Native/ZX stage views; legacy ZX setting migration; paged hex scrolling; save/rebuild; no-main module message passed.');
+    console.log('Local VS Code test: hello-world execution; C, Go, Wasm and Native tabs each with Source, LIR, Optimized and ZX; full and program-only Assembly and Binary; legacy ZX setting migration; paged hex scrolling; save/rebuild; no-main module message passed.');
   }
 } finally {
   await browser?.close().catch(() => {});

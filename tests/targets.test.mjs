@@ -72,15 +72,22 @@ cp "$source" "$output/hello.$target"; echo runtime > "$output/runtime.h"; echo s
 `, { mode: 0o755 });
     const work = path.join(directory, 'work');
     const built = await buildTarget(command, 'py', file, work, []);
-    assert.deepEqual(built.views[0].files.map(item => item.name), ['hello.py', 'runtime.h']);
-    assert.equal(built.views[0].files[0].text, 'first\n');
+    // Every target shows the shared stages before its own output.
+    assert.deepEqual(built.views.map(item => [item.id, item.label]), [['source', 'Source'], ['lowered', 'LIR'],
+      ['optimized', 'Optimized'], ['zx', 'ZX'], ['generated', 'py']]);
+    assert.equal(view(built, 'source').files[0].text, 'first\n');
+    assert.match(built.views.find(item => item.id === 'lowered').message, /^hello\.zi has no main/);
+    assert.deepEqual(view(built, 'generated').files.map(item => item.name), ['hello.py', 'runtime.h']);
+    assert.equal(view(built, 'generated').files[0].text, 'first\n');
+    assert.ok(built.views.every(item => !('caption' in item)));
     const failed = await buildTarget(command, 'plan9-c', file, work, []);
     assert.equal(failed.ok, false); assert.match(failed.message, /unsupported/);
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 test('real package builds expose each target, portable execution, IR and module guidance',
   { skip: !existsSync(compiler) }, async () => {
-  const { execute, irArgs, runSteps } = require('../run.cjs');
+  const { execute, runSteps } = require('../run.cjs');
+  const { irArgs } = require('../targets.cjs');
   const { runCommand } = require('../preview.cjs');
   const directory = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-package-'));
   try {
@@ -98,10 +105,16 @@ test('real package builds expose each target, portable execution, IR and module 
       results[target] = await buildTarget(compiler, target, source, work, []);
       assert.equal(results[target].ok, true, `${target}: ${results[target].message}`);
     }
-    assert.match(view(results.c, 'source').files[0].text, /Package roots/);
+    const pipeline = ['source', 'lowered', 'optimized', 'zx'];
+    assert.deepEqual(results.c.views.map(item => item.id), [...pipeline, 'generated', 'assembly', 'binary']);
+    assert.deepEqual(results.go.views.map(item => item.id), [...pipeline, 'generated', 'assembly', 'binary']);
+    assert.deepEqual(results.wasm.views.map(item => item.id), [...pipeline, 'text', 'binary']);
+    assert.match(view(results.c, 'source').files[0].text, /print\(Message\)/);
+    if (nativeTools) assert.match(view(results.c, 'lowered').files[0].text, /^lir \d+ entry/);
+    assert.match(view(results.c, 'generated').files[0].text, /Package roots/);
     assert.match(view(results.c, 'assembly').files[0].text, /\.text|\.section/);
     assert.deepEqual(await magic(view(results.c, 'binary').files[0]), [0x7f, 0x45, 0x4c, 0x46]);
-    assert.match(view(results.go, 'source').files.map(file => file.text).join(''), /package main/);
+    assert.match(view(results.go, 'generated').files.map(file => file.text).join(''), /package main/);
     assert.match(view(results.go, 'assembly').files[0].text, /STEXT[\s\S]*TEXT\s+main\./);
     assert.deepEqual(await magic(view(results.go, 'binary').files[0]), [0x7f, 0x45, 0x4c, 0x46]);
     assert.match(view(results.wasm, 'text').files[0].text, /\(module/);
@@ -109,14 +122,12 @@ test('real package builds expose each target, portable execution, IR and module 
     if (nativeTools) {
       const native = await buildTarget(compiler, 'native', source, work, []);
       assert.equal(native.ok, true, native.message);
-      assert.deepEqual(native.views.map(item => item.id),
-        ['source', 'checked', 'lowered', 'optimized', 'zx', 'disassembly', 'binary']);
+      assert.deepEqual(native.views.map(item => item.id), [...pipeline, 'assembly', 'binary']);
       assert.match(view(native, 'source').files[0].text, /print\(Message\)/);
-      assert.ok(view(native, 'checked').files.some(file => file.name === 'hello.zir'));
       const binary = view(native, 'binary').files[0];
       assert.deepEqual(await magic(binary), [0x7f, 0x45, 0x4c, 0x46]);
-      const { binaryContentStart } = require('../run.cjs');
-      assert.match(binaryContentStart(await fs.readFile(binary.binary.path)).label, /^hello:main at /);
+      const code = binary.binary.regions.filter(region => region.kind === 'code');
+      assert.deepEqual(code.map(region => region.label), ['hello:main']);
       assert.equal(view(native, 'zx').files[0].name, 'final.zx');
       const headers = await runCommand('readelf', ['-lW', binary.binary.path], directory);
       assert.equal(headers.code, 0, headers.stderr);
@@ -139,7 +150,9 @@ test('real package builds expose each target, portable execution, IR and module 
     if (nativeTools) {
       const native = await buildTarget(compiler, 'native', source, work, []);
       assert.match(view(native, 'lowered').files[0].text, /^lir \d+ entry/);
-      assert.match(view(native, 'disassembly').files[0].text, /# command: objdump -d final\.elf[\s\S]*<hello:main>:/);
+      const listing = view(native, 'assembly').files[0];
+      assert.match(listing.text, /^ELF header\n[\s\S]*\nProgram headers\n[\s\S]*<hello:main>:[\s\S]*<hello:Add>:/);
+      assert.match(listing.filtered, /^<hello:main>:[\s\S]*\n\n<hello:Add>:/);
       assert.deepEqual(await magic(view(native, 'binary').files[0]), [0x7f, 0x45, 0x4c, 0x46]);
     }
     await fs.writeFile(source, '#program_export\nFrame :: () -> s32 { return 7 }\n');
@@ -149,6 +162,8 @@ test('real package builds expose each target, portable execution, IR and module 
     for (const target of ['c', 'go']) {
       const result = await buildTarget(compiler, target, source, work, []);
       assert.match(view(result, 'source').files[0].text, /Frame/);
+      assert.match(view(result, 'generated').files[0].text, /Frame/);
+      assert.equal(result.views.find(item => item.id === 'zx').message, expected);
       assert.equal(result.views.find(item => item.id === 'binary').message, expected);
     }
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
@@ -168,7 +183,7 @@ mkdir -p "$output"; for name in app app_types accessibility_linux helper window;
   echo "/* $name */" > "$output/$name.py"; done; echo runtime > "$output/zir_runtime.h"
 `, { mode: 0o755 });
     const built = await buildTarget(command, 'py', file, path.join(directory, 'work'), []);
-    const files = built.views[0].files;
+    const files = view(built, 'generated').files;
     assert.deepEqual(files.filter(item => !item.dependency).map(item => item.name), ['window.py', 'helper.py']);
     assert.equal(files[0].text, '/* window */\n');
     const dependencies = files.filter(item => item.dependency);
@@ -184,7 +199,7 @@ mkdir -p "$output"; for name in app app_types accessibility_linux helper window;
     assert.deepEqual(splitOwn([{ name: 'other.c' }], file, new Set(['window'])).dependencies, []);
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
-test('Native names the missing renamed tool instead of zi2asm', async () => {
+test('Native names the missing renamed tool', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ziran-tools-'));
   try {
     const bin = path.join(directory, 'build/bin'); await fs.mkdir(bin, { recursive: true });
@@ -216,9 +231,11 @@ test('a Kryon program gets the C, Go, Wasm and Native tabs with only its own cod
         { folders: [path.resolve('..')] });
       assert.equal(results[target].ok, true, `${target}: ${results[target].message}`);
     }
-    for (const [target, own] of [['c', ['window.c', 'window.h']], ['go', ['window.go']]]) {
-      const files = view(results[target], 'source').files;
-      assert.deepEqual(files.filter(item => !item.dependency).map(item => item.name), own, target);
+    for (const [target, first] of [['c', 'window.c'], ['go', 'window.go']]) {
+      const files = view(results[target], 'generated').files;
+      const own = files.filter(item => !item.dependency).map(item => item.name);
+      assert.equal(own[0], first, target);
+      assert.ok(own.every(name => name.startsWith('window.')), `${target}: ${own}`);
       assert.match(files[0].text, /main/);
       assert.ok(files.some(item => item.dependency && item.name.startsWith('app')), `${target} lists Kryon as dependencies`);
       assert.ok(files.filter(item => item.dependency).every(item => item.text === undefined));
@@ -230,11 +247,44 @@ test('a Kryon program gets the C, Go, Wasm and Native tabs with only its own cod
     assert.deepEqual(assembly.filter(item => !item.dependency).map(item => item.name), ['window.s']);
     assert.ok(assembly.filter(item => item.dependency).every(item => typeof item.load === 'function'));
     assert.match(view(results.wasm, 'text').files[0].text, /\(module/);
-    if (nativeTools) {
-      const checked = view(results.native, 'checked').files;
-      assert.equal(checked[0].name, 'window.zir');
-      assert.ok(checked.slice(1).every(item => item.dependency));
-      assert.deepEqual(await magic(view(results.native, 'binary').files[0]), [0x7f, 0x45, 0x4c, 0x46]);
+    for (const target of ['c', 'go', 'wasm', ...(nativeTools ? ['native'] : [])]) {
+      assert.deepEqual(results[target].views.slice(0, 4).map(item => item.label), ['Source', 'LIR', 'Optimized', 'ZX'], target);
+      assert.ok(!results[target].views.some(item => item.label === 'ZIR'), target);
     }
+  } finally { await fs.rm(work, { recursive: true, force: true }); }
+});
+
+const hello = path.resolve('../ziran/examples/hello.zi');
+test('hello\'s Assembly lists the whole ELF and Binary marks its regions, each with a program-only filter',
+  { skip: !nativeTools || !existsSync(hello) }, async () => {
+  const work = await fs.mkdtemp(path.join(os.tmpdir(), 'ziran-hello-'));
+  try {
+    const native = await buildTarget(compiler, 'native', hello, work, []);
+    assert.equal(native.ok, true, native.message);
+    assert.deepEqual(native.views.map(item => item.label), ['Source', 'LIR', 'Optimized', 'ZX', 'Assembly', 'Binary']);
+    const listing = view(native, 'assembly').files[0];
+    const { text, filtered } = listing;
+    assert.equal(listing.filterLabel, 'Hide ELF parts');
+    for (const line of [/^ELF header$/m, /^  ELF64, little endian/m, /machine x86-64, entry 0x[0-9a-f]+/,
+      /^Program headers$/m, /^  0 +LOAD +0x0 /m, /^file 0x0–0x40  ELF header · 64 bytes$/m,
+      /^<runtime entry>:$/m, /^<hello:main>:$/m, /^<data>:$/m, /\tsyscall$/m, /\tret$/m])
+      assert.match(text, line);
+    assert.doesNotMatch(text, /^#|no generated C or Go|map identity|command: objdump/m);
+    // Every call reaches an instruction start: decoding resynchronized after padding.
+    const starts = new Set([...text.matchAll(/^  ([0-9a-f]+):\t/gm)].map(match => match[1]));
+    for (const [, target] of text.matchAll(/\tcall +0x([0-9a-f]+)$/gm)) assert.ok(starts.has(target), `call 0x${target}`);
+    // Hiding the ELF parts leaves only the program's own code.
+    assert.match(filtered, /^<hello:main>:\n  [0-9a-f]+:\t55 +\tpush +%rbp$/m);
+    assert.match(filtered, /\tret\n$/);
+    assert.doesNotMatch(filtered, /ELF header|Program headers|padding|<runtime|<data>|^file /m);
+    const binary = view(native, 'binary').files[0].binary;
+    assert.equal(binary.filterLabel, 'Hide ELF parts');
+    const kinds = binary.regions.map(region => `${region.label}:${region.kind}`);
+    for (const part of ['ELF header:header', 'program headers (2):header', 'padding:padding', 'runtime entry:runtime',
+      'hello:main:code', 'runtime:runtime', 'data:data']) assert.ok(kinds.includes(part), part);
+    assert.equal(binary.regions[0].start, 0);
+    assert.equal(binary.regions.at(-1).end, binary.size);
+    for (let index = 1; index < binary.regions.length; index++)
+      assert.equal(binary.regions[index].start, binary.regions[index - 1].end, 'regions cover the file in order');
   } finally { await fs.rm(work, { recursive: true, force: true }); }
 });

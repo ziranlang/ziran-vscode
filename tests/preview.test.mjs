@@ -72,13 +72,79 @@ test('preview keeps child environments, webviews and rebuild inputs safe', () =>
     assert.equal(previewInput(root, path.join(root, file)), false, file);
   const html = previewHtml('nonce');
   assert.match(html, /<iframe id="app"/);
-  assert.match(html, /id="inspect">Inspect Targets</);
-  // The preview is the embedded window only: no separate window and no raw
-  // Kryon-profile C or ZIR dumps; Inspect Targets opens the clean target tabs.
-  for (const removed of [/Open in New Window/, /open-window|window-output|window-status|window-stdout/,
-    /openWindow/, /Generated C|c-files|c-source/, /ZIR \(inspected\)|ir-files|ir-source/])
+  assert.match(html, /<button id="open-window" hidden>Open in window<\/button>/);
+  // The target views sit right under the live window; there is no Inspect
+  // Targets button and no raw Kryon-profile C or ZIR dump.
+  assert.ok(html.indexOf('id="code-section"') > html.indexOf('<iframe id="app"'));
+  for (const part of [/id="tabs" role="tablist"/, /id="views" role="tablist"/, /id="hex-scroll"/, /inspector\.render\(data\)/])
+    assert.match(html, part);
+  for (const removed of [/Inspect Targets|id="inspect"|'inspect'/, /Open in New Window|window-stdout/,
+    /Generated C|c-files|c-source/, /ZIR \(inspected\)|ir-files|ir-source/, /caption/])
     assert.doesNotMatch(html, removed);
   assert.doesNotThrow(() => new vm.Script(html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]));
+});
+test('Open in window runs the program\'s C executable as one owned process', async () => {
+  const { Preview, projectEntry } = require('../preview.cjs');
+  const directory = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-window-'));
+  const preview = Object.create(Preview.prototype);
+  try {
+    const source = path.join(directory, 'window.zi');
+    await fs.writeFile(source, 'App :: #import "kryon/app";\nmain :: () -> s32 { return App.Run(App.Window.{}) }\n');
+    const started = path.join(directory, 'started');
+    // A fake compiler whose "executable" records each start, then waits like a window.
+    const command = path.join(directory, 'fake-ziran');
+    await fs.writeFile(command, `#!/bin/sh
+while [ $# -gt 0 ]; do case "$1" in -o) shift; output=$1;; --target=c) c=1;; --exe) exe=1;; esac; shift; done
+[ "$c$exe" = 11 ] || exit 3
+printf '#!/bin/sh\\necho $$ >> ${started}\\nexec sleep 60\\n' > "$output/window"; chmod +x "$output/window"
+`, { mode: 0o755 });
+    const vscode = { Uri: { file: fsPath => ({ fsPath }) }, workspace: { workspaceFolders: [],
+      getConfiguration: () => ({ get: (key, fallback) => key === 'command' ? command : fallback }) } };
+    const posted = [];
+    Object.assign(preview, { disposed: false, source, storage: path.join(directory, 'storage'), vscode,
+      windowChild: null, windowQueue: Promise.resolve(), inspector: { message: async () => false, dispose() {} },
+      disposables: [], state: { program: true, windowStatus: '', windowOutput: '', windowBuilding: false },
+      post() { posted.push({ ...this.state }); } });
+    const pids = async (count) => {
+      for (let attempt = 0; attempt < 100; attempt++) {
+        try {
+          const lines = (await fs.readFile(started, 'utf8')).trim().split('\n');
+          if (lines.length >= count) return lines.map(Number);
+        } catch {}
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      throw new Error('the window process did not start');
+    };
+    const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    await preview.message({ type: 'openWindow' });
+    assert.equal(preview.state.windowStatus, 'Window open');
+    assert.ok(posted.some(state => state.windowBuilding && /Building/.test(state.windowStatus)));
+    const [first] = await pids(1);
+    assert.ok(alive(first));
+    // Opening again replaces the window rather than adding a second one.
+    await preview.message({ type: 'openWindow' });
+    const [, second] = await pids(2);
+    assert.ok(alive(second));
+    for (let attempt = 0; attempt < 40 && alive(first); attempt++) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(alive(first), false, 'the earlier window ended');
+    preview.dispose();
+    for (let attempt = 0; attempt < 60 && alive(second); attempt++) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(alive(second), false, 'closing the preview ends its window');
+    // A failed build names its reason instead of opening anything.
+    await fs.writeFile(source, 'main :: () { }\n');
+    Object.assign(preview, { disposed: false, windowChild: null });
+    vscode.workspace.getConfiguration = () => ({ get: (key, fallback) => key === 'command' ? '/bin/false' : fallback });
+    await preview.openWindow();
+    assert.equal(preview.state.windowStatus, 'C build failed');
+    assert.equal(preview.state.windowBuilding, false);
+    // A project preview opened from its folder inspects the manifest's entry.
+    await fs.writeFile(path.join(directory, 'ziran.toml'), '[package]\nname="w"\nentry="window.zi"\n');
+    assert.equal(await projectEntry(directory), source);
+    assert.equal(await projectEntry(path.join(directory, 'storage')), '');
+  } finally {
+    preview.dispose?.();
+    await fs.rm(directory, { recursive: true, force: true });
+  }
 });
 test('preview assets refresh embedded files and reject paths outside the build', async () => {
   const { previewAssets } = require('../preview-assets.cjs');

@@ -23,29 +23,37 @@ pane beside a `.zi` file. Like the Kryon preview it shows, top to bottom:
 
 - the program's output in a window, with the run time and any build or runtime
   errors below it (a run stops after 10 seconds);
-- **Generated code**: the C, Go and WebAssembly that `ziran build`
-  writes, one tab per target with syntax highlighting and a file picker; the
-  checkboxes choose the targets and save them to `ziran.previewTargets`;
-- **ZIR** beside Go shows highlighted checked modules; **WAT** shows readable
-  WebAssembly text and the binary hex view.
+- **Targets**: one tab per target (C, Go, WebAssembly and Native), with
+  syntax highlighting and a file picker; the checkboxes choose the targets and
+  save them to `ziran.previewTargets`.
+
+Every target shows the whole pipeline: **Source**, **LIR**, **Optimized**
+(the verified instructions read back from ZX and the optimization report) and
+**ZX**, then its own output: **C** or **Go** with their **Assembly** and
+**Binary**, **WAT** and **Binary** for WebAssembly, and **Assembly** and
+**Binary** for Native.
 
 Saving a `.zi` file in the same directory reruns everything; **Run again** does
-it on demand. A file without `main :: ()` still shows its generated code and
-`.zir`. The program is bundled with `ziran bundle --entry module:main` and run
+it on demand. A file without `main :: ()` still shows its source and generated
+code. The program is bundled with `ziran bundle --entry module:main` and run
 with `ziran run` on the portable runtime. In Kryon projects ▶ runs the Kryon
 preview instead.
 
-Select **Native** to inspect the direct pipeline: source → ZIR → LIR →
-linked portable ZX instructions → target assembly → binary (the ELF lowered
-from ZX). The Optimized view
-shows the verified instructions read back from ZX and the source optimization
-report. Assembly is an `objdump` of the final ELF, not generated C or Go. The
-Binary view's hex starts at `main`; its ELF header toggle still reveals the whole file.
+Native lowers the pipeline's ZX directly to an ELF. Its **Assembly** is the
+whole file: the ELF header, the program headers, each region of the file in
+order, code disassembled by `objdump` with a `<module:function>` label at each
+function from the native map, and data as bytes. **Hide ELF parts** leaves only
+the program's own functions. **Binary** is the whole file in hex, each region
+under a label row with its offsets; the same toggle keeps only the program's
+code and data. Going to an offset the toggle hides shows the whole file again.
+The disassembler follows the ELF's machine (x86-64 now; AArch64 when objdump
+supports it).
 `zi2zx` writes the LIR, the optimization report and `final.zx`, and lists the
 verified ZX; `zx2native` lowers `final.zx` to the native map and ELF. Each is
 found beside the `ziran` command or in a Ziran checkout (build them with
 `make`), and a missing one is named.
-C and Go also produce binaries, but are separate generated-code routes.
+C and Go also produce binaries, whose hex marks the ELF sections; WebAssembly
+and ZX binaries mark their sections the same way.
 There is one Native checkbox: ZX is a portable instruction stage within it, not
 a second target. Native is enabled by default; an older `previewTargets` entry
 of `"zx"` selects Native automatically without creating a duplicate option.
@@ -102,9 +110,12 @@ The launcher uses the project's package toolchain and local overrides.
 Saving sources in the workspace, or changing app manifests, overrides or locks,
 rebuilds the preview. Generated build files are excluded to prevent rebuild loops.
 **Run again** rebuilds on demand. Build errors appear below
-the preview; fixing and saving the source restores it. Generated C and inspected
-`.zir` modules come from `build/generated/PROFILE/`. Preview builds cannot inherit
-the desktop display.
+the preview; fixing and saving the source restores it. Preview builds cannot
+inherit the desktop display.
+
+Under the live window the preview shows the same **Targets** as the Run pane
+for the previewed source, or the project's entry when it was opened from a
+folder; they rebuild beside the preview on every save.
 
 ### Kryon programs
 
@@ -115,16 +126,17 @@ pane, and the program's real interface runs live inside the frame. The
 extension keeps a private project for the file in its own storage, with one
 canvas profile, and the Kryon tool builds the program's `main` for the page.
 
+**Open in window** builds the program as a C executable and runs it in a
+window of its own; opening it again replaces that window, and closing the
+preview ends it.
+
 The portable Run pane does not run such a program: the portable runtime has no
 window host, so `App.Run` would return its failure status and the pane would
 print that result, `1`, as the program's value. It is `main`'s return value,
 not output, and in a C-generated executable the same integer is the process
-exit status. **Inspect Targets**, in the preview and the editor title bar,
-opens the Run pane for the file anyway, with a note in place of the output and
-the same C, Go, ZIR, WebAssembly and Native tabs as any other `.zi` file.
-
-Those tabs show the program's own code first: for `window.zi`, the Source view
-opens `window.c`, not the Kryon modules the build also writes. Every other
+exit status. The preview's targets show the program's own code first: for
+`window.zi`, the C view opens `window.c`, not the Kryon modules the build also
+writes. Every other
 generated file, such as Kryon, the standard library and runtime support, is
 listed under **Dependencies** and is read, compiled to assembly or inspected
 only when you pick it. A target that cannot build the program shows a one-line
@@ -188,20 +200,21 @@ Maintained example sources are never edited.
 
 Set `ZIRAN_PREVIEW_WINDOW=1` and `ZIRAN_RUN_TEST=1` with `ZIRAN_PREVIEW_PROJECT`
 at a Kryon checkout and `ZIRAN_PREVIEW_ENTRY=examples/window.zi` to test a Kryon
-program: Run must open the live embedded canvas, and Inspect Targets must show
-the C, Go, ZIR, WebAssembly and Native tabs with `window.c` first and the Kryon
-modules under Dependencies.
+program: Run must open the live embedded canvas, **Open in window** must map
+exactly one real window on the private display, and the targets under the
+window must show C, Go, WebAssembly and Native with `window.c` first and the
+Kryon modules under Dependencies.
 
 For generated-code Preview on an existing source file, use
 `ZIRAN_PREVIEW_PROJECT=/path/to/package ZIRAN_PREVIEW_ENTRY=relative/file.zi npm run test:run`.
 Set `ZIRAN_PREVIEW_WORKSPACE` to a parent folder to test workspace nesting.
-This mode reads the real source without saving edits and verifies its C, Go
-and ZIR views in a private VSCode window.
+This mode reads the real source without saving edits and verifies its C and Go
+views in a private VSCode window.
 
 Add `ZIRAN_RUN_NATIVE=1` to inspect the existing `examples/hello.zi` through every
 Native stage instead. For example, set `ZIRAN_PREVIEW_PROJECT` to the canonical
 Ziran checkout and `ZIRAN_PREVIEW_ENTRY=examples/hello.zi`. This also verifies
-main-first ELF navigation and the header toggle without changing that source.
+the full and filtered Assembly and Binary views without changing that source.
 
 Run `npm run test:laws` to verify law token colors in an isolated native VSCode
 window on private Xvfb. Set `ZIRAN_INSTALLED_EXTENSION` to an installed extension
