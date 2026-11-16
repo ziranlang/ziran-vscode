@@ -27,11 +27,16 @@ try {
     await fs.mkdir(path.join(project, '.vscode'));
     await fs.writeFile(path.join(project, '.vscode/settings.json'), JSON.stringify({'ziran.kryonCommand':launcher}));
   }
-  // ZIRAN_PREVIEW_THEME picks the editor's color theme, for light and dark checks.
-  if (process.env.ZIRAN_PREVIEW_THEME) {
+  // ZIRAN_PREVIEW_THEME picks the editor's color theme, for light and dark
+  // checks, and ZIRAN_PREVIEW_COMMAND the ziran command, whose toolchain
+  // tools beside it the targets use.
+  const settings = {
+    ...(process.env.ZIRAN_PREVIEW_THEME ? { 'workbench.colorTheme': process.env.ZIRAN_PREVIEW_THEME } : {}),
+    ...(process.env.ZIRAN_PREVIEW_COMMAND ? { 'ziran.command': process.env.ZIRAN_PREVIEW_COMMAND } : {}),
+  };
+  if (Object.keys(settings).length) {
     await fs.mkdir(path.join(runtime, 'profile/User'), { recursive: true });
-    await fs.writeFile(path.join(runtime, 'profile/User/settings.json'),
-      JSON.stringify({ 'workbench.colorTheme': process.env.ZIRAN_PREVIEW_THEME }));
+    await fs.writeFile(path.join(runtime, 'profile/User/settings.json'), JSON.stringify(settings));
   }
   const net = await import('node:net');
   const server = net.createServer();
@@ -121,11 +126,12 @@ try {
       await preview.locator('#window').screenshot({ path: path.join(process.env.ZIRAN_PREVIEW_SHOTS, `window-${process.env.ZIRAN_PREVIEW_THEME ? 'light' : 'dark'}.png`) });
     }
     console.log('Real window.zi runs as an embedded Kryon canvas, not portable scalar output:', pixels);
-    // Open in window runs the program's ZX bundle natively as one owned
-    // process, with no C executable and no engine fallback. A program native
-    // code cannot run yet shows its outcome in the pane instead of a window.
+    // Open in window runs the native executable the Binary tab shows as one
+    // owned process, with no C executable and no engine fallback; it links
+    // window.zi's capabilities from the registered host library. A program
+    // that cannot build or run shows its named gap in the pane instead.
     const owned = () => {
-      try { return execFileSync('pgrep', ['-f', `zi2zx run --backend native ${runtime}/profile/.*/window-zx/`], { encoding: 'utf8' }).trim().split('\n').filter(Boolean); }
+      try { return execFileSync('pgrep', ['-f', `${runtime}/profile/.*/window-zx/.*/window\\.elf`], { encoding: 'utf8' }).trim().split('\n').filter(Boolean); }
       catch { return []; }
     };
     // Another installed extension may leave a quick input open over the pane.
@@ -134,14 +140,23 @@ try {
     for (const round of [1, 2]) {
       await dismiss();
       await preview.locator('#open-window').click();
-      await preview.waitForFunction(() => /^(Window open|Window closed|.+ run failed)/.test(document.querySelector('#window-status').textContent), null, { timeout: 180000 });
+      await preview.waitForFunction(() => /^(Window open|Window closed|.+ run failed|No .+ build|Can.t run on .+)/.test(document.querySelector('#window-status').textContent), null, { timeout: 180000 });
       assert.ok(owned().length <= 1, `round ${round}: never more than one owned native process`);
     }
     await preview.waitForFunction(() => !document.querySelector('#open-window').disabled &&
-      /^(Window open|Window closed|.+ run failed)/.test(document.querySelector('#window-status').textContent), null, { timeout: 180000 });
+      /^(Window open|Window closed|.+ run failed|No .+ build|Can.t run on .+)/.test(document.querySelector('#window-status').textContent), null, { timeout: 180000 });
     const outcome = await preview.locator('#window-status').textContent();
     assert.equal(execFileSync('sh', ['-c', `find ${runtime}/profile -type d -name window-c | wc -l`], { encoding: 'utf8' }).trim(), '0', 'no C window build');
-    console.log('Open in window ran the ZX bundle natively (no C build); outcome:', outcome);
+    // With Kryon's desktop host library registered (make install-user, or
+    // ZIRAN_HOST_PATH), the executable shows window.zi's one window.
+    assert.equal(outcome, 'Window open · Linux x86-64', await preview.locator('#build-output').textContent());
+    let windows = '';
+    for (let attempt = 0; attempt < 100 && !/"Window": .* 320x160\+/.test(windows); attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      windows = execFileSync('xwininfo', ['-root', '-tree'], { encoding: 'utf8' });
+    }
+    assert.match(windows, /"Window": .* 320x160\+/, 'one 320x160 window titled Window');
+    console.log('Open in window ran window.zi\'s native executable (no C build, no player); outcome:', outcome);
     // The target views sit under the live window in the same pane.
     await preview.waitForFunction(() => document.querySelectorAll('#tabs [role=tab]').length === 4 &&
       !document.querySelector('#tabs').textContent.includes('…'), null, { timeout: 600000 });
@@ -167,7 +182,14 @@ try {
     }, own, { timeout: 60000 });
     await picker.selectOption('');
     assert.equal(await preview.locator('#code').textContent(), own);
-    console.log('Under the window: C, Go, Wasm and Native with Source and ZIR (and LIR, Optimized, ZX for Wasm and Native), window.c first and Kryon modules under Dependencies.');
+    // Native's Assembly lists the executable Open in window runs.
+    await preview.locator('#tabs').getByRole('tab', { name: 'Native', exact: true }).click();
+    assert.deepEqual(await preview.locator('#views').getByRole('tab').allTextContents(),
+      ['Source', 'ZIR', 'LIR', 'Optimized', 'ZX', 'Assembly', 'Binary']);
+    await preview.locator('#views').getByRole('tab', { name: 'Assembly', exact: true }).click();
+    await preview.waitForFunction(() => /<window:main>:/.test(document.querySelector('#code').textContent), null, { timeout: 60000 });
+    assert.doesNotMatch(await preview.locator('#code').textContent(), /assembly\.gap/);
+    console.log('Under the window: C, Go, Wasm and Native with Source and ZIR (and LIR, Optimized, ZX for Wasm and Native), window.c first, Kryon modules under Dependencies and Native\'s Assembly of the linked executable.');
   } else {
     await app.locator('canvas').waitFor();
     const pixels = await app.locator('canvas').first().evaluate(canvas=>({width:canvas.width,height:canvas.height}));

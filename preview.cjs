@@ -396,17 +396,19 @@ class Preview {
   }
 
   // The program on the selected platform, as one owned process with its own
-  // window; opening it again replaces the previous one. On Linux x86-64 the
-  // ZX bundle runs natively in the ZX player, which hosts the window; another
-  // platform runs its own build its own way (Wine, a device, Node). There is
-  // no C, engine or platform fallback: what cannot run shows its named gap.
+  // window; opening it again replaces the previous one. Every platform runs
+  // the build its Binary tab shows, its own way: on Linux x86-64 the
+  // executable itself, which links its host capabilities, such as Kryon's
+  // window, from the registered host libraries; elsewhere under Wine or on a
+  // device. There is no C, engine or platform fallback: what cannot build or
+  // run shows its named gap.
   async openWindow() {
     if (this.disposed || !this.state.program) return;
     await stopOwnedProcess(this.windowChild);
     this.windowChild = null;
     Object.assign(this.state, { windowStatus: 'Building the window…', windowOutput: '', windowBuilding: true });
     this.post();
-    const { bundleArgs, modulePaths, packageRoot, ziranCommand, ziranTool } = require('./targets.cjs');
+    const { bundleArgs, modulePaths, packageRoot, ziranCommand } = require('./targets.cjs');
     const command = await ziranCommand(this.source, this.vscode);
     const paths = await modulePaths(this.source, command, this.vscode);
     const project = await packageRoot(this.source);
@@ -430,23 +432,15 @@ class Preview {
     const { platform, tools } = await this.inspector.choosePlatform({ command, folders });
     if (this.disposed) return;
     if (!platform) return failed('No platform to run on', 'The toolchain lists no platforms.');
-    let launch;
-    if (platform.id === 'x86_64-linux' && !platform.gap) {
-      const player = await ziranTool(command, 'zi2zx', this.source, folders);
-      if (this.disposed) return;
-      if (!player) return failed('zi2zx was not found', 'Build it in a Ziran checkout with `make`.');
-      // The window needs the editor's display, so it keeps the full environment.
-      launch = { command: player, args: ['run', '--backend', 'native', bundle], env: process.env };
-    } else {
-      const artifact = await platformArtifact(platform, bundle, output, path.basename(this.source, '.zi'), tools);
-      if (this.disposed) return;
-      if (artifact.problem) return failed(`No ${platform.label} build`, artifact.problem);
-      const adbCommands = this.vscode.workspace.getConfiguration('ziran', this.vscode.Uri.file(this.source))
-        .get('adbCommands', ['adb']);
-      launch = await runRoute(platform, artifact.file, { storage: this.storage, adbCommands, window: true });
-      if (this.disposed) return;
-      if (launch.missing) return failed(`Can't run on ${platform.label}`, launch.missing);
-    }
+    const artifact = await platformArtifact(platform, bundle, output, path.basename(this.source, '.zi'), tools);
+    if (this.disposed) return;
+    if (artifact.problem) return failed(`No ${platform.label} build`, artifact.problem);
+    const adbCommands = this.vscode.workspace.getConfiguration('ziran', this.vscode.Uri.file(this.source))
+      .get('adbCommands', ['adb']);
+    // The window needs the editor's display, so the run keeps its environment.
+    const launch = await runRoute(platform, artifact.file, { storage: this.storage, adbCommands, window: true });
+    if (this.disposed) return;
+    if (launch.missing) return failed(`Can't run on ${platform.label}`, launch.missing);
     const child = spawn(launch.command, launch.args, { cwd, env: launch.env,
       stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false, detached: process.platform !== 'win32' });
     this.windowChild = child;

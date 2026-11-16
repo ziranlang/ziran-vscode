@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Open in window** runs the build the Binary tab shows on every platform: on Linux x86-64, the native executable itself, which links a Kryon program's window from Kryon's registered desktop host library, instead of `zi2zx run`, which never found the registered host and stopped at "missing host capability". Native's Assembly and Binary for `examples/window.zi` show that executable instead of the machine-host gap, and a capability no registered library provides still shows its named gap.
 - Leave a viewport of room under the Targets views, so switching to a tab or view with a shorter block keeps the page where it was instead of pulling it up.
 - Add a **Platform** dropdown beside the target checkboxes, listing what the toolchain can build: every `ziran capabilities` row checked against `zx2native`'s usage and a probe of each, plus Wasm from `zx2wasm`. A refused row is disabled and shows its gap by name; Windows x86-64 lights up when `zx2native --platform windows` lands. The choice is saved to `ziran.previewPlatform`.
 - End Native in the platform's own output: Assembly and Binary of the ELF or PE, or WAT and Binary for Wasm; the shared stages are unchanged. Read PE files: the DOS header and stub, PE headers, sections and imports, with import-table calls named and **Hide PE parts** leaving only the program's code. Disassemble AArch64 and ARM with a cross `objdump` or the Android NDK's `llvm-objdump`, and take the machine from the file rather than the map.

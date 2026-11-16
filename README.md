@@ -76,8 +76,8 @@ platform; only Native's output changes:
 
 Each run is one process, with its output in the Run pane; nothing falls back
 to another platform, and a missing route (no Wine, no device, no Node) is named.
-In the Kryon preview, **Open in window** follows the same choice; on Linux
-x86-64 the ZX player hosts the window (`zi2zx run --backend native`).
+In the Kryon preview, **Open in window** follows the same choice and runs the
+build the **Binary** tab shows: on Linux x86-64, the executable itself.
 
 A machine format's **Assembly** is the whole file. For an ELF: the ELF header,
 the program headers and each region of the file in order. For a PE: the DOS
@@ -170,11 +170,15 @@ pane, and the program's real interface runs live inside the frame. The
 extension keeps a private project for the file in its own storage, with one
 canvas profile, and the Kryon tool builds the program's `main` for the page.
 
-**Open in window** bundles the program to the same ZX the **ZX** tab shows and
-runs it natively (`zi2zx run --backend native`), in one process; opening it
-again replaces that process, and closing the preview ends it. There is no
-fallback to C or the portable engine: if native code cannot run the program,
-the pane shows the tool's named gap. The preview follows the active `.zi`
+**Open in window** bundles the program to the same ZX the **ZX** tab shows,
+lowers it for the selected platform as the **Binary** tab does and runs that,
+in one process; opening it again replaces that process, and closing the
+preview ends it. On Linux x86-64 the executable links its host capabilities,
+such as Kryon's window, from the host libraries registered beside the ZX
+players (`make install-user` in Kryon registers its desktop library). There is
+no fallback to C, a player or the portable engine: a capability no registered
+library provides, or a program that cannot run, shows the tool's named gap in
+the pane. The preview follows the active `.zi`
 editor, and its live frame has no padding and a transparent page over the
 editor's background.
 
@@ -249,9 +253,13 @@ Maintained example sources are never edited.
 Set `ZIRAN_PREVIEW_WINDOW=1` and `ZIRAN_RUN_TEST=1` with `ZIRAN_PREVIEW_PROJECT`
 at a Kryon checkout and `ZIRAN_PREVIEW_ENTRY=examples/window.zi` to test a Kryon
 program: Run must open the live embedded canvas, **Open in window** must start
-exactly one native ZX process and build no C, and the targets under the
-window must show their stage tabs with `window.c` first and the
-Kryon modules under Dependencies.
+exactly one native executable, build no C and show one 320x160 window titled
+"Window", and the targets under the window must show their stage tabs with
+`window.c` first, the Kryon modules under Dependencies and Native's Assembly
+of the linked executable. Kryon's desktop host library must be registered
+(`make install-user`, or `ZIRAN_HOST_PATH` at a registry holding its
+`.library` file); `ZIRAN_PREVIEW_COMMAND` points the editor at another
+`ziran` command and the tools beside it.
 
 For generated-code Preview on an existing source file, use
 `ZIRAN_PREVIEW_PROJECT=/path/to/package ZIRAN_PREVIEW_ENTRY=relative/file.zi npm run test:run`.

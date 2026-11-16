@@ -84,8 +84,9 @@ test('preview keeps child environments, webviews and rebuild inputs safe', () =>
   assert.doesNotThrow(() => new vm.Script(html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]));
 });
 const linux = { id: 'x86_64-linux', label: 'Linux x86-64', arch: 'x86_64', os: 'linux', format: 'elf', emit: 'elf', gap: '' };
-const onLinux = { dispose() {}, message: async () => false, choosePlatform: async () => ({ platform: linux, tools: {} }) };
-test('Open in window on Linux x86-64 runs the program\'s ZX bundle natively as one owned process', async () => {
+const onLinux = (zx2native) => ({ dispose() {}, message: async () => false,
+  choosePlatform: async () => ({ platform: linux, tools: { zx2native } }) });
+test('Open in window on Linux x86-64 runs the executable its Binary tab shows as one owned process', async () => {
   const { Preview, projectEntry } = require('../preview.cjs');
   const directory = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-window-'));
   const preview = Object.create(Preview.prototype);
@@ -93,23 +94,27 @@ test('Open in window on Linux x86-64 runs the program\'s ZX bundle natively as o
     const source = path.join(directory, 'window.zi');
     await fs.writeFile(source, 'App :: #import "kryon/app";\nmain :: () -> s32 { return App.Run(App.Window.{}) }\n');
     const started = path.join(directory, 'started');
-    // A fake compiler writes the bundle; the fake player beside it records each
-    // native start with its arguments, then waits like a window. Neither builds C.
+    const lowered = path.join(directory, 'lowered');
+    // A fake compiler writes the bundle; a fake zx2native records how it was
+    // asked to lower it and writes an executable that records each start,
+    // then waits like a window. Nothing builds C.
     const command = path.join(directory, 'fake-ziran');
     await fs.writeFile(command, `#!/bin/sh
 [ "$1" = bundle ] || exit 3
 while [ $# -gt 0 ]; do case "$1" in -o) shift; output=$1;; esac; shift; done
 echo zx > "$output"
 `, { mode: 0o755 });
-    await fs.writeFile(path.join(directory, 'zi2zx'), `#!/bin/sh
-echo "$$ $*" >> ${started}
-exec sleep 60
+    const zx2native = path.join(directory, 'zx2native');
+    await fs.writeFile(zx2native, `#!/bin/sh
+echo "$*" >> ${lowered}
+while [ $# -gt 0 ]; do case "$1" in -o) shift; output=$1;; esac; shift; done
+printf '#!/bin/sh\\necho "$$ $0" >> ${started}\\nexec sleep 60\\n' > "$output"
 `, { mode: 0o755 });
     const vscode = { Uri: { file: fsPath => ({ fsPath }) }, workspace: { workspaceFolders: [],
       getConfiguration: () => ({ get: (key, fallback) => key === 'command' ? command : fallback }) } };
     const posted = [];
     Object.assign(preview, { disposed: false, source, storage: path.join(directory, 'storage'), vscode,
-      windowChild: null, windowQueue: Promise.resolve(), inspector: onLinux,
+      windowChild: null, windowQueue: Promise.resolve(), inspector: onLinux(zx2native),
       disposables: [], watchers: [], state: { program: true, windowStatus: '', windowOutput: '', windowBuilding: false },
       post() { posted.push({ ...this.state }); } });
     const pids = async (count) => {
@@ -129,7 +134,8 @@ exec sleep 60
     const [first] = await pids(1);
     assert.ok(alive(first));
     const launch = (await fs.readFile(started, 'utf8')).split('\n')[0];
-    assert.match(launch, /^\d+ run --backend native .*window\.zx$/, 'native ZX player, not the C executable');
+    assert.match(launch, /^\d+ .*\/window\.elf$/, 'the native executable, not a player or a C executable');
+    assert.match(await fs.readFile(lowered, 'utf8'), /^--target x86_64 --platform linux --emit elf -o .*window\.elf .*window\.zx$/m);
     // Opening again replaces the window rather than adding a second one.
     await preview.message({ type: 'openWindow' });
     const [, second] = await pids(2);
@@ -184,7 +190,7 @@ test('preview assets refresh embedded files and reject paths outside the build',
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('a native run that cannot start shows the named gap and falls back to nothing', async () => {
+test('a native build that cannot link a capability shows the named gap and falls back to nothing', async () => {
   const { Preview } = require('../preview.cjs');
   const directory = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-gap-'));
   const preview = Object.create(Preview.prototype);
@@ -193,16 +199,17 @@ test('a native run that cannot start shows the named gap and falls back to nothi
     await fs.writeFile(source, 'main :: () -> s32 { return 0 }\n');
     const command = path.join(directory, 'fake-ziran');
     await fs.writeFile(command, '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && { shift; echo zx > "$1"; }; shift; done\n', { mode: 0o755 });
-    await fs.writeFile(path.join(directory, 'zi2zx'),
-      '#!/bin/sh\necho "ziran: assembly.gap.machine-host: machine ELF does not implement host capability OpenWindow; no alternate engine was selected" >&2\nexit 1\n', { mode: 0o755 });
+    const zx2native = path.join(directory, 'zx2native');
+    await fs.writeFile(zx2native,
+      '#!/bin/sh\necho "ziran: assembly.gap.machine-host: machine ELF does not implement host capability OpenWindow: no registered host library defines it; no alternate engine was selected" >&2\nexit 1\n', { mode: 0o755 });
     const vscode = { Uri: { file: fsPath => ({ fsPath }) }, workspace: { workspaceFolders: [],
       getConfiguration: () => ({ get: (key, fallback) => key === 'command' ? command : fallback }) } };
     Object.assign(preview, { disposed: false, source, storage: path.join(directory, 'storage'), vscode,
-      windowChild: null, windowQueue: Promise.resolve(), disposables: [], watchers: [], inspector: onLinux,
+      windowChild: null, windowQueue: Promise.resolve(), disposables: [], watchers: [], inspector: onLinux(zx2native),
       state: { program: true, windowStatus: '', windowOutput: '', windowBuilding: false }, post() {} });
     await preview.openWindow();
-    for (let attempt = 0; attempt < 100 && preview.windowChild; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
-    assert.equal(preview.state.windowStatus, 'Linux x86-64 run failed (exit 1)');
+    assert.equal(preview.windowChild, null, 'nothing started');
+    assert.equal(preview.state.windowStatus, 'No Linux x86-64 build');
     assert.match(preview.state.windowOutput, /assembly\.gap\.machine-host.*OpenWindow/);
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
