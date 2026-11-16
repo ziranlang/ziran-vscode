@@ -136,8 +136,11 @@ function hexLabel(region) {
 }
 `;
 
+// A viewport of room under the open Targets section keeps the page where it
+// is when another tab or view shows a shorter block.
 const INSPECTOR_STYLE = `
   #code-section { margin-top: 16px; }
+  #code-section[open] { padding-bottom: 100vh; }
   #code-section > summary { cursor: pointer; font-weight: bold; margin-bottom: 8px; }
   #code-section button, #code-section select { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; padding: 5px 9px; cursor: pointer; }
   #code-section select { max-width: 100%; }

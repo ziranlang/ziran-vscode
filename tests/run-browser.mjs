@@ -150,6 +150,17 @@ try {
     assert.match(await code(), /Hello, World!/);
     await view('Assembly').click();
     assert.match(await code(), /\.text|\.section/);
+    // With the view tabs at the top, a much shorter view keeps the page still.
+    const scrolled = await run.evaluate(() => {
+      const page = document.scrollingElement;
+      page.scrollTop = document.querySelector('#views').getBoundingClientRect().top + page.scrollTop;
+      return page.scrollTop;
+    });
+    assert.ok(scrolled > 0, 'the page scrolls past the window to the view tabs');
+    await view('Source').click();
+    assert.match(await code(), /main :: /);
+    assert.equal(await run.evaluate(() => document.scrollingElement.scrollTop), scrolled,
+      'Source, shorter than Assembly, keeps the scroll position');
     await view('Binary').click();
     // The whole file, each region under its label; the toggle keeps only code and data.
     await firstRow(/^── ELF header · 0x0–0x40 · 64 bytes$/);
