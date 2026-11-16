@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add a **Platform** dropdown beside the target checkboxes, listing what the toolchain can build: every `ziran capabilities` row checked against `zx2native`'s usage and a probe of each, plus Wasm from `zx2wasm`. A refused row is disabled and shows its gap by name; Windows x86-64 lights up when `zx2native --platform windows` lands. The choice is saved to `ziran.previewPlatform`.
+- End Native in the platform's own output: Assembly and Binary of the ELF or PE, or WAT and Binary for Wasm; the shared stages are unchanged. Read PE files: the DOS header and stub, PE headers, sections and imports, with import-table calls named and **Hide PE parts** leaving only the program's code. Disassemble AArch64 and ARM with a cross `objdump` or the Android NDK's `llvm-objdump`, and take the machine from the file rather than the map.
+- Run on the chosen platform its own way: Linux x86-64 directly, Windows under Wine in a private prefix with `WINEDEBUG=-all`, AArch64 and ARMv7 on a device through adb (`ziran.adbCommands`, such as `ssh user@host adb`), and Wasm in Node. One process per run, no fallback to another platform, and a missing route is named. **Open in window** follows the same choice.
+- Save the Platform and target choices in a folder's settings: both settings are resource-scoped now, where VS Code refused the folder write for `previewTargets` ("does not support the folder resource scope"), and a choice that cannot be saved shows why in the Run pane.
+- Fix a crash when an `objdump` candidate is not installed: its start error and exit closed the listing file twice.
+
 - Show every target's real stages from one table: Source, ZIR, LIR, Optimized, ZX, then the target's output. C and Go compile the checked ZIR directly and show Source and ZIR only; WebAssembly and Native show the whole chain. Shared stages are built once, ZIR is back as a stage (listed by the toolchain that wrote it), and C, Go, LIR and ZX steps no longer run for tabs that do not use them.
 - Show the file dropdown on Source and ZIR as well as the generated code: the program's own modules first, dependency modules loaded only when picked.
 - Color the Source tab with the extension's own Ziran grammar, dependency sources included, and add light highlighting for assembly.

@@ -47,15 +47,52 @@ code. The program is bundled with `ziran bundle --entry module:main` and run
 with `ziran run` on the portable runtime. In Kryon projects ▶ runs the Kryon
 preview instead.
 
-Native lowers the pipeline's ZX directly to an ELF. Its **Assembly** is the
-whole file: the ELF header, the program headers, each region of the file in
-order, code disassembled by `objdump` with a `<module:function>` label at each
-function from the native map, and data as bytes. **Hide ELF parts** leaves only
-the program's own functions. **Binary** is the whole file in hex, each region
-under a label row with its offsets; the same toggle keeps only the program's
-code and data. Going to an offset the toggle hides shows the whole file again.
-The disassembler follows the ELF's machine (x86-64 now; AArch64 when objdump
-supports it).
+### Platforms
+
+The **Platform** dropdown beside the target checkboxes chooses what Native
+lowers ZX to and where ▶ runs the program. It lists what the toolchain says
+it can build: every row of `ziran capabilities --json`, checked against
+`zx2native`'s own `--target`, `--platform` and `--emit` choices and a probe of
+each row, then **Wasm** from `zx2wasm`. A row the toolchain refuses is listed
+but disabled, with its gap by name (for example
+`assembly.gap.machine-platform-service-unavailable`), so the list follows the
+toolchain without a table of its own here. The choice is saved to
+`ziran.previewPlatform`.
+
+The shared stages (Source, ZIR, LIR, Optimized, ZX) are the same on every
+platform; only Native's output changes:
+
+- **Linux x86-64**: an ELF, run directly.
+- **Windows x86-64**: a PE `.exe` (`zx2native --platform windows`, lit up as
+  soon as `zx2native` accepts it), run under Wine with a private `WINEPREFIX`
+  in the extension's storage and `WINEDEBUG=-all`.
+- **Linux or Android AArch64 and ARMv7**: an ELF, run on an attached device
+  through adb. `ziran.adbCommands` lists how to reach adb, such as `adb` or
+  `ssh user@host adb` for a phone on another machine; the first device whose
+  primary Android ABI matches runs it, then any that supports it. With no
+  device the platform still analyzes, and Run names what is missing.
+- **Wasm**: a `zx2wasm` module, shown as **WAT** and **Binary**, run in Node by
+  the extension's `wasm-run.cjs`.
+
+Each run is one process, with its output in the Run pane; nothing falls back
+to another platform, and a missing route (no Wine, no device, no Node) is named.
+In the Kryon preview, **Open in window** follows the same choice; on Linux
+x86-64 the ZX player hosts the window (`zi2zx run --backend native`).
+
+A machine format's **Assembly** is the whole file. For an ELF: the ELF header,
+the program headers and each region of the file in order. For a PE: the DOS
+header and stub, the PE headers, the section table and the imports, then each
+region, with calls through the import address table named as
+`<KERNEL32.dll!WriteFile>`. Code is disassembled with a `<module:function>`
+label at each function from the native map, and data is shown as bytes. **Hide
+ELF parts** or **Hide PE parts** leaves only the program's own functions,
+hiding the headers, the DOS stub, the import tables and the padding. **Binary**
+is the whole file in hex, each region under a label row with its offsets; the
+same toggle keeps only the program's code and data. Going to an offset the
+toggle hides shows the whole file again. The disassembler follows the file's
+machine: `objdump` reads x86-64 ELF and PE code (`i386:x86-64`), and AArch64
+and ARM code goes to a cross `objdump` or, when that is missing, the Android
+NDK's `llvm-objdump`.
 `zi2zx` writes the LIR, the optimization report and `final.zx`, and lists the
 verified ZX; `zx2native` lowers `final.zx` to the native map and ELF. Each is
 found beside the `ziran` command or in a Ziran checkout (build them with
@@ -66,11 +103,10 @@ There is one Native checkbox: ZX is a portable instruction stage within it, not
 a second target. Native is enabled by default; an older `previewTargets` entry
 of `"zx"` selects Native automatically without creating a duplicate option.
 
-Direct native console output currently supports Linux x86-64 using Ziran-owned
-formatting and syscall veneers, without libc or a dynamic linker. Unsupported
-services, targets and formatting (including floats) produce named gap errors;
-Native never falls back to another engine. The regular Run output above these
-inspection views still uses the portable runtime.
+Direct native console output uses Ziran-owned formatting and syscall veneers,
+without libc or a dynamic linker. Unsupported services, targets and formatting
+(including floats) produce named gap errors; Native never falls back to
+another engine, and Run shows the same gap for the program.
 Build outputs stay in the extension's private storage and are removed when its
 Run pane closes; the original example is never replaced with generated stages.
 

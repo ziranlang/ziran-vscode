@@ -134,11 +134,11 @@ try {
     for (const round of [1, 2]) {
       await dismiss();
       await preview.locator('#open-window').click();
-      await preview.waitForFunction(() => /^(Window open|Window closed|Native run failed)/.test(document.querySelector('#window-status').textContent), null, { timeout: 180000 });
+      await preview.waitForFunction(() => /^(Window open|Window closed|.+ run failed)/.test(document.querySelector('#window-status').textContent), null, { timeout: 180000 });
       assert.ok(owned().length <= 1, `round ${round}: never more than one owned native process`);
     }
     await preview.waitForFunction(() => !document.querySelector('#open-window').disabled &&
-      /^(Window open|Window closed|Native run failed)/.test(document.querySelector('#window-status').textContent), null, { timeout: 180000 });
+      /^(Window open|Window closed|.+ run failed)/.test(document.querySelector('#window-status').textContent), null, { timeout: 180000 });
     const outcome = await preview.locator('#window-status').textContent();
     assert.equal(execFileSync('sh', ['-c', `find ${runtime}/profile -type d -name window-c | wc -l`], { encoding: 'utf8' }).trim(), '0', 'no C window build');
     console.log('Open in window ran the ZX bundle natively (no C build); outcome:', outcome);

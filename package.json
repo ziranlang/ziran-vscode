@@ -79,6 +79,7 @@
           "description": "Path to the ziran command used to check files, generate code, and inspect .zir files. Empty uses a Ziran checkout above the file or beside the workspace, then ~/.local/bin/ziran, then PATH."
         },
         "ziran.previewTargets": {
+          "scope": "resource",
           "type": "array",
           "default": [
             "c",
@@ -105,6 +106,22 @@
           },
           "uniqueItems": true,
           "description": "Targets the Run pane and the Kryon preview build and inspect. Each shows the shared stages (Source, LIR, Optimized, ZX) and then its own output in tabs; the checkboxes update this setting."
+        },
+        "ziran.previewPlatform": {
+          "scope": "resource",
+          "type": "string",
+          "default": "x86_64-linux",
+          "description": "Platform the Native target lowers ZX to and Run runs on, such as x86_64-linux, x86_64-windows (under Wine), aarch64-android or armv7-android (on a device through adb) or wasm32 (in Node). The Platform dropdown lists the toolchain's platforms, with each gap by name, and updates this setting."
+        },
+        "ziran.adbCommands": {
+          "type": "array",
+          "default": [
+            "adb"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "How to reach adb for ARM platforms, tried in order, such as \"adb\" or \"ssh user@host adb\" for a device attached to another machine. The first attached device with the platform's Android ABI runs the program."
         },
         "ziran.packagePaths": {
           "type": "object",

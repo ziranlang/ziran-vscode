@@ -3,7 +3,7 @@ import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 const require = createRequire(import.meta.url);
-const { mainLine, runHtml, runSteps, versionMismatchProblem, workDirectoryFor } = require('../run.cjs');
+const { bundleStep, mainLine, runHtml, versionMismatchProblem, workDirectoryFor } = require('../run.cjs');
 const { HEX_VIEW_SOURCE, HIGHLIGHT_SOURCE, TargetInspector } = require('../inspector.cjs');
 const { binaryRegions } = require('../binary-layout.cjs');
 const put = (data, values) => { for (const [method, offset, value] of values) data[method](value, offset); return data; };
@@ -110,13 +110,8 @@ test('run commands, webview navigation and generated-code highlighting stay vali
   assert.notEqual(workDirectoryFor('/notes/other.zi', '/extension-storage/run/owned'), work);
   assert.equal(mainLine('// hello\nmain :: () {\n}\n'), 1);
   for (const source of ['Answer :: () -> s32 { return 42 }\n', '  main :: () {}\n']) assert.equal(mainLine(source), -1);
-  assert.deepEqual(runSteps('ziran', '/notes/hello.zi', ['/std'], '/tmp/hello.zx'), [
-    { command: 'ziran', args: ['bundle', '--root', '/notes', '--module-path', '/std', '--entry', 'hello:main', '-o', '/tmp/hello.zx', '/notes/hello.zi'] },
-    { command: 'ziran', args: ['run', '/tmp/hello.zx'] },
-  ]);
-  // A project bundle runs on the pinned toolchain that wrote it.
-  assert.deepEqual(runSteps('ziran', '/app/src/hello.zi', [], '/tmp/hello.zx', true)[1],
-    { command: 'ziran', args: ['run', '--project', '/tmp/hello.zx'] });
+  assert.deepEqual(bundleStep('ziran', '/notes/hello.zi', ['/std'], '/tmp/hello.zx'),
+    { command: 'ziran', args: ['bundle', '--root', '/notes', '--module-path', '/std', '--entry', 'hello:main', '-o', '/tmp/hello.zx', '/notes/hello.zi'] });
   const html = runHtml('nonce');
   for (const pattern of [/class="window"/, /id="views" role="tablist"/, /id="hex-scroll"/, /box\.id = 'program-only'/])
     assert.match(html, pattern);

@@ -5,7 +5,9 @@ const { createHash, randomBytes } = require('node:crypto');
 const { isKryonProgram, previewLocation, projectRoot, safeEnvironment } = require('./preview.cjs');
 const { bundleArgs, importingPrograms, mainLine, modulePaths, noMainMessage, packageRoot,
   ziranCommand, ziranTool } = require('./targets.cjs');
+const moduleName = (file) => path.basename(file, '.zi');
 const { INSPECTOR_MARKUP, INSPECTOR_SCRIPT, INSPECTOR_STYLE, TargetInspector } = require('./inspector.cjs');
+const { platformArtifact, runRoute } = require('./platforms.cjs');
 
 const RUN_TIMEOUT_MS = 10000;
 // The portable runtime has no window host, so a kryon/app program is not run
@@ -13,14 +15,11 @@ const RUN_TIMEOUT_MS = 10000;
 const KRYON_PROGRAM_NOTICE = 'This Kryon program opens its own window. Run it with ▶ to see it live ' +
   'in the Kryon preview. The targets below show its generated code.';
 
-// `ziran bundle --root . --entry hello:main -o hello.zx hello.zi`, then
-// `ziran run hello.zx`: the file's main on the portable runtime. A project
-// bundle is written by the project's pinned toolchain, such as a
-// ziran.local.toml checkout, so `run --project` reads it with that same
-// toolchain instead of whichever one the launcher belongs to.
-function runSteps(command, file, paths, bundle, project = false) {
-  return [{ command, args: bundleArgs(file, paths, bundle, project) },
-    { command, args: project ? ['run', '--project', bundle] : ['run', bundle] }];
+// `ziran bundle --root . --entry hello:main -o hello.zx hello.zi`: the
+// file's main as ZX, which the selected platform's lowering turns into its
+// program, run there.
+function bundleStep(command, file, paths, bundle, project = false) {
+  return { command, args: bundleArgs(file, paths, bundle, project) };
 }
 
 function versionMismatchProblem(message, ziran, zi2zx) {
@@ -41,9 +40,9 @@ async function commandPath(command, cwd, environment = process.env) {
   return command;
 }
 
-function execute(command, args, cwd, timeout) {
+function execute(command, args, cwd, timeout, env = safeEnvironment()) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { cwd, env: safeEnvironment(), windowsHide: true });
+    const child = spawn(command, args, { cwd, env, windowsHide: true });
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -116,6 +115,7 @@ class RunPreview {
     this.disposed = false;
     this.running = false;
     this.rerun = false;
+    this.storage = context.globalStorageUri.fsPath;
     this.buildRoot = path.join(context.globalStorageUri.fsPath, 'run',
       `${process.pid}-${randomBytes(6).toString('hex')}`);
     this.workDirectory = workDirectoryFor(file, this.buildRoot);
@@ -182,7 +182,9 @@ class RunPreview {
   async message(message) {
     if (message.type === 'ready') this.post();
     if (message.type === 'run') this.schedule();
-    await this.inspector.message(message);
+    // A choice that cannot be saved says why instead of being dropped.
+    try { await this.inspector.message(message); }
+    catch (error) { Object.assign(this.state, { problems: error.message, failed: true }); this.post(); }
   }
 
   async runProgram(command, paths, folders) {
@@ -199,10 +201,10 @@ class RunPreview {
     const bundle = path.join(this.workDirectory, 'program.zx');
     const project = await packageRoot(this.file);
     const cwd = project || path.dirname(this.file);
-    const [bundleStep, runStep] = runSteps(command, this.file, paths, bundle, Boolean(project));
+    const step = bundleStep(command, this.file, paths, bundle, Boolean(project));
     const started = Date.now();
-    const built = await execute(bundleStep.command, bundleStep.args, cwd,
-      RUN_TIMEOUT_MS);
+    const built = await execute(step.command, step.args, cwd, RUN_TIMEOUT_MS);
+    const fail = (status, problems) => Object.assign(this.state, { output: '', time: '', failed: true, problems, status });
     if (built.code !== 0) {
       let problem = (built.stderr || built.stdout).trim() ||
         (built.code === null ? `Could not start ${command}` : `ziran bundle exited with ${built.code}`);
@@ -211,13 +213,21 @@ class RunPreview {
         const zi2zx = await ziranTool(resolved, 'zi2zx', this.file, folders);
         problem = versionMismatchProblem(problem, resolved, zi2zx);
       }
-      Object.assign(this.state, { output: '', time: '', failed: true,
-        problems: problem,
-        status: 'Build failed' });
-      return;
+      return fail('Build failed', problem);
     }
-    const ran = await execute(runStep.command, runStep.args, cwd,
-      RUN_TIMEOUT_MS);
+    // The program runs on the selected platform, its own way, or not at all.
+    const { platform, tools } = await this.inspector.choosePlatform({ command, folders });
+    if (!platform) return fail('No platform to run on', 'The toolchain lists no platforms.');
+    this.state.title = `${path.basename(this.file)} · ${platform.label}`;
+    const artifact = await platformArtifact(platform, bundle, this.workDirectory, moduleName(this.file), tools);
+    if (artifact.problem) return fail(`No ${platform.label} build`, artifact.problem);
+    this.state.status = `Starting on ${platform.label}…`;
+    this.post();
+    const adbCommands = this.vscode.workspace.getConfiguration('ziran', this.vscode.Uri.file(this.file))
+      .get('adbCommands', ['adb']);
+    const route = await runRoute(platform, artifact.file, { storage: this.storage, adbCommands });
+    if (route.missing) return fail(`Can't run on ${platform.label}`, route.missing);
+    const ran = await execute(route.command, route.args, cwd, RUN_TIMEOUT_MS, route.env);
     const failed = ran.code !== 0 || ran.timedOut;
     Object.assign(this.state, {
       output: ran.stdout,
@@ -225,7 +235,7 @@ class RunPreview {
       time: `${((Date.now() - started) / 1000).toFixed(2)}s`,
       failed,
       status: ran.timedOut ? `Stopped after ${RUN_TIMEOUT_MS / 1000}s` :
-        failed ? `Exited with ${ran.code}` : 'Up to date · reruns on save',
+        failed ? `Exited with ${ran.code} on ${platform.label}` : `Up to date · ${platform.label} via ${route.label} · reruns on save`,
     });
   }
 
@@ -310,5 +320,5 @@ function activateRun(context, vscode) {
   );
 }
 
-module.exports = { KRYON_PROGRAM_NOTICE, RunPreview, activateRun, commandPath, execute, mainLine,
-  runHtml, runSteps, versionMismatchProblem, workDirectoryFor };
+module.exports = { KRYON_PROGRAM_NOTICE, RunPreview, activateRun, bundleStep, commandPath, execute, mainLine,
+  runHtml, versionMismatchProblem, workDirectoryFor };

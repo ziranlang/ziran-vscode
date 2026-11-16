@@ -83,7 +83,9 @@ test('preview keeps child environments, webviews and rebuild inputs safe', () =>
     assert.doesNotMatch(html, removed);
   assert.doesNotThrow(() => new vm.Script(html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]));
 });
-test('Open in window runs the program\'s ZX bundle natively as one owned process', async () => {
+const linux = { id: 'x86_64-linux', label: 'Linux x86-64', arch: 'x86_64', os: 'linux', format: 'elf', emit: 'elf', gap: '' };
+const onLinux = { dispose() {}, message: async () => false, choosePlatform: async () => ({ platform: linux, tools: {} }) };
+test('Open in window on Linux x86-64 runs the program\'s ZX bundle natively as one owned process', async () => {
   const { Preview, projectEntry } = require('../preview.cjs');
   const directory = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-window-'));
   const preview = Object.create(Preview.prototype);
@@ -107,7 +109,7 @@ exec sleep 60
       getConfiguration: () => ({ get: (key, fallback) => key === 'command' ? command : fallback }) } };
     const posted = [];
     Object.assign(preview, { disposed: false, source, storage: path.join(directory, 'storage'), vscode,
-      windowChild: null, windowQueue: Promise.resolve(), inspector: { message: async () => false, dispose() {} },
+      windowChild: null, windowQueue: Promise.resolve(), inspector: onLinux,
       disposables: [], watchers: [], state: { program: true, windowStatus: '', windowOutput: '', windowBuilding: false },
       post() { posted.push({ ...this.state }); } });
     const pids = async (count) => {
@@ -122,7 +124,7 @@ exec sleep 60
     };
     const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
     await preview.message({ type: 'openWindow' });
-    assert.equal(preview.state.windowStatus, 'Window open');
+    assert.equal(preview.state.windowStatus, 'Window open · Linux x86-64');
     assert.ok(posted.some(state => state.windowBuilding && /Building/.test(state.windowStatus)));
     const [first] = await pids(1);
     assert.ok(alive(first));
@@ -196,11 +198,11 @@ test('a native run that cannot start shows the named gap and falls back to nothi
     const vscode = { Uri: { file: fsPath => ({ fsPath }) }, workspace: { workspaceFolders: [],
       getConfiguration: () => ({ get: (key, fallback) => key === 'command' ? command : fallback }) } };
     Object.assign(preview, { disposed: false, source, storage: path.join(directory, 'storage'), vscode,
-      windowChild: null, windowQueue: Promise.resolve(), disposables: [], watchers: [], inspector: { dispose() {} },
+      windowChild: null, windowQueue: Promise.resolve(), disposables: [], watchers: [], inspector: onLinux,
       state: { program: true, windowStatus: '', windowOutput: '', windowBuilding: false }, post() {} });
     await preview.openWindow();
     for (let attempt = 0; attempt < 100 && preview.windowChild; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
-    assert.equal(preview.state.windowStatus, 'Native run failed (exit 1)');
+    assert.equal(preview.state.windowStatus, 'Linux x86-64 run failed (exit 1)');
     assert.match(preview.state.windowOutput, /assembly\.gap\.machine-host.*OpenWindow/);
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });

@@ -86,7 +86,8 @@ cp "$source" "$output/hello.$target"; echo runtime > "$output/runtime.h"; echo s
 });
 test('real package builds expose each target, portable execution, IR and module guidance',
   { skip: !existsSync(compiler) }, async () => {
-  const { execute, runSteps } = require('../run.cjs');
+  const { bundleStep, execute } = require('../run.cjs');
+  const { platformArtifact, runRoute } = require('../platforms.cjs');
   const { irArgs } = require('../targets.cjs');
   const { runCommand } = require('../preview.cjs');
   const directory = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-package-'));
@@ -144,9 +145,18 @@ test('real package builds expose each target, portable execution, IR and module 
     }
     const ir = await runCommand(compiler, irArgs(source, [], path.join(directory, 'ir'), true), directory);
     assert.equal(ir.code, 0, ir.stderr);
-    for (const [index, step] of runSteps(compiler, source, [], path.join(directory, 'hello.zx'), true).entries()) {
-      const result = await execute(step.command, step.args, directory, 10000);
-      assert.equal(result.code, 0, result.stderr); if (index === 1) assert.equal(result.stdout, 'Package roots!\n');
+    // The package's bundle runs on Linux x86-64 the way the Run pane runs it.
+    const step = bundleStep(compiler, source, [], path.join(directory, 'hello.zx'), true);
+    const bundled = await execute(step.command, step.args, directory, 10000);
+    assert.equal(bundled.code, 0, bundled.stderr);
+    if (nativeTools && process.arch === 'x64') {
+      const linux = { id: 'x86_64-linux', label: 'Linux x86-64', arch: 'x86_64', os: 'linux', format: 'elf', emit: 'elf', gap: '' };
+      const built = await platformArtifact(linux, path.join(directory, 'hello.zx'), directory, 'hello',
+        { zx2native: path.resolve('../ziran/build/bin/zx2native') });
+      assert.equal(built.problem, undefined, built.problem);
+      const route = await runRoute(linux, built.file);
+      const result = await execute(route.command, route.args, directory, 10000, route.env);
+      assert.deepEqual([result.code, result.stdout], [0, 'Package roots!\n'], result.stderr);
     }
     await fs.writeFile(source, 'Add :: (a:s32,b:s32)->s32{return a+b}\nmain :: ()->s32{return Add(40,2)}\n');
     if (nativeTools) {

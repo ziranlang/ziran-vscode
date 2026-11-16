@@ -134,6 +134,9 @@ try {
     await run.waitForFunction(() => document.querySelector('#screen').textContent === 'Hello, World!\n');
     await tab('Native').waitFor({ timeout: 180000 });
     await run.waitForFunction(() => !document.querySelector('#status').textContent.includes('…'), null, { timeout: 180000 });
+    // The program can finish before the slowest target; wait for every tab.
+    await run.waitForFunction(() => ![...document.querySelectorAll('#tabs [role=tab]')].some(item => item.textContent.endsWith('…')),
+      null, { timeout: 180000 });
     assert.deepEqual(await run.locator('#tabs').getByRole('tab').allTextContents(), ['C', 'Go', 'Wasm', 'Native']);
     assert.deepEqual(await run.locator('#targets input').count(), 4);
     assert.equal(await run.locator('#caption').count(), 0);
@@ -203,6 +206,32 @@ try {
     await run.locator('#program-only').check();
     await firstRow(/^── hello:main · 0x/);
 
+    // The Platform dropdown lists the toolchain's platforms, gaps disabled by
+    // name; picking one rebuilds Native's output and reruns the program there.
+    const platforms = await run.locator('#platform option').evaluateAll(options =>
+      options.map(option => ({ value: option.value, text: option.textContent, disabled: option.disabled })));
+    assert.equal(await run.locator('#platform').inputValue(), 'x86_64-linux');
+    assert.deepEqual(platforms[0], { value: 'x86_64-linux', text: 'Linux x86-64', disabled: false });
+    assert.ok(platforms.some(item => item.value === 'wasm32' && !item.disabled), JSON.stringify(platforms));
+    for (const id of ['x86_64-windows', 'aarch64-android', 'armv7-android']) {
+      const item = platforms.find(entry => entry.value === id);
+      assert.ok(item, id);
+      if (item.disabled) assert.match(item.text, / — assembly\.gap\.[\w.-]+/, id);
+    }
+    assert.match(await run.locator('#status').textContent(), /Linux x86-64 via this machine/);
+    await run.locator('#platform').selectOption('wasm32');
+    await run.waitForFunction(() => /Wasm via Node/.test(document.querySelector('#status').textContent), null, { timeout: 180000 })
+      .catch(async (error) => { throw new Error(`${error.message}: ${await run.locator('#status').textContent()}; ` +
+        `${await run.locator('#problems').textContent()}; selected ${await run.locator('#platform').inputValue()}`); });
+    assert.equal(await run.locator('#screen').textContent(), 'Hello, World!\n');
+    await tab('Native').click();
+    await run.waitForFunction(() => [...document.querySelectorAll('#views [role=tab]')].map(item => item.textContent)
+      .join() === 'Source,ZIR,LIR,Optimized,ZX,WAT,Binary', null, { timeout: 180000 });
+    await view('WAT').click();
+    assert.match(await code(), /\(module/);
+    await run.locator('#platform').selectOption('x86_64-linux');
+    await run.waitForFunction(() => /Linux x86-64 via this machine/.test(document.querySelector('#status').textContent), null, { timeout: 180000 });
+
     await tab('Wasm').click();
     await fs.writeFile(path.join(runtime, 'edit'), 'main :: () { print("Saved!\\n"); }\n');
     await run.waitForFunction(() => document.querySelector('#screen').textContent === 'Saved!\n');
@@ -238,7 +267,7 @@ try {
 
     assert.equal(await fs.readFile(path.join(runtime, 'activated'), 'utf8'), installed || repo);
     await fs.writeFile(path.join(runtime, 'done'), '');
-    console.log('Local VS Code test: hello-world execution; C, Go, Wasm and Native tabs each with Source and ZIR (plus LIR, Optimized and ZX for Wasm and Native); full and program-only Assembly and Binary; legacy ZX setting migration; paged hex scrolling; save/rebuild; no-main module message passed.');
+    console.log('Local VS Code test: hello-world execution; C, Go, Wasm and Native tabs each with Source and ZIR (plus LIR, Optimized and ZX for Wasm and Native); full and program-only Assembly and Binary; legacy ZX setting migration; the Platform dropdown (Linux x86-64 and Wasm runs, gaps by name); paged hex scrolling; save/rebuild; no-main module message passed.');
   }
 } finally {
   await browser?.close().catch(() => {});

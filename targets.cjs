@@ -5,7 +5,8 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { parse } = require('@iarna/toml');
 const { manifestPath, projectRoot, runCommand: spawnCommand, safeEnvironment } = require('./preview.cjs');
-const { elfListing } = require('./disassembly.cjs');
+const { binaryListing } = require('./disassembly.cjs');
+const { DEFAULT_PLATFORM, platformArtifact, platformList, platformStages, selectedPlatform } = require('./platforms.cjs');
 
 const TARGETS = [
   { id: 'c', label: 'C' },
@@ -28,10 +29,13 @@ const TARGET_STAGES = {
   native: { shared: 5, own: [['assembly', 'Assembly'], ['binary', 'Binary']] },
 };
 // Source code generators other than the four above stop after ZIR too.
-function stagesOf(target) {
+// Native ends in its PLATFORM's output: Assembly and Binary for a machine
+// format, WAT and Binary for Wasm; the shared chain is the same on all.
+function stagesOf(target, platform = null) {
   const entry = TARGET_STAGES[target] ||
     { shared: 2, own: [['generated', TARGETS.find((item) => item.id === target)?.label || target]] };
-  return [...CHAIN.slice(0, entry.shared), ...entry.own];
+  const own = target === 'native' && platform ? platformStages(platform) : entry.own;
+  return [...CHAIN.slice(0, entry.shared), ...own];
 }
 function chainFor(targets) {
   const depth = Math.max(2, ...targets.map((target) => (TARGET_STAGES[target] || { shared: 2 }).shared));
@@ -278,6 +282,12 @@ function enabledTargets(file, vscode) {
   return TARGETS.map((target) => target.id).filter((id) => selected.includes(id));
 }
 
+// The platform the Native target and Run use, from `ziran.previewPlatform`.
+function configuredPlatform(file, vscode) {
+  return vscode.workspace.getConfiguration('ziran', vscode.Uri.file(file)).get('previewPlatform', DEFAULT_PLATFORM) ||
+    DEFAULT_PLATFORM;
+}
+
 function moduleName(file) {
   return path.basename(file, '.zi');
 }
@@ -404,8 +414,8 @@ function rank(file) {
   return 2;
 }
 
-function cut(text, file) {
-  return text.length > VIEW_TEXT_LIMIT ? `${text.slice(0, VIEW_TEXT_LIMIT)}\n… ${text.length - VIEW_TEXT_LIMIT} more characters not shown; the ELF is ${file.replace(/\.disasm$/, '.elf')}\n` : text;
+function cut(text, binary) {
+  return text.length > VIEW_TEXT_LIMIT ? `${text.slice(0, VIEW_TEXT_LIMIT)}\n… ${text.length - VIEW_TEXT_LIMIT} more characters not shown; the file is ${binary}\n` : text;
 }
 
 async function readText(file, limit = VIEW_TEXT_LIMIT) {
@@ -607,6 +617,19 @@ async function buildGo(context) {
   return { ok: true, message: '', views };
 }
 
+// A .wasm module as WebAssembly text.
+async function watText(artifact) {
+  const bytes = await fs.readFile(artifact);
+  const wabt = await require('wabt')();
+  const module = wabt.readWasm(bytes, { readDebugNames: true });
+  try {
+    module.validate();
+    module.generateNames();
+    module.applyNames();
+    return module.toText({ foldExprs: false, inlineExport: false });
+  } finally { module.destroy(); }
+}
+
 async function buildWasm(context) {
   const { command, file, output, paths, project, cwd, hasMain, noMain } = context;
   if (!hasMain) return { ok: false, message: noMain, views: [] };
@@ -614,16 +637,7 @@ async function buildWasm(context) {
   const artifact = path.join(output, `${name}.wasm`);
   const built = await runCommand(command, buildArgs('wasm', file, artifact, paths, project), cwd);
   if (built.code !== 0) return { ok: false, message: problem(built, 'ziran build'), views: [] };
-  const bytes = await fs.readFile(artifact);
-  const wabt = await require('wabt')();
-  const module = wabt.readWasm(bytes, { readDebugNames: true });
-  let text;
-  try {
-    module.validate();
-    module.generateNames();
-    module.applyNames();
-    text = module.toText({ foldExprs: false, inlineExport: false });
-  } finally { module.destroy(); }
+  const text = await watText(artifact);
   return { ok: true, message: '', views: [...await pipelineViews(context),
     view('text', 'WAT', [{ name: `${name}.wat`, text }]),
     view('binary', 'Binary', [await binaryFile(artifact)]),
@@ -659,10 +673,20 @@ function missingTools(names) {
 // found on its own; old tool names are not fallbacks.
 async function nativeTools(command, file, folders) {
   const zx2native = await ziranTool(command, 'zx2native', file, folders);
-  // One checkout's tools agree on the ZX revision; prefer zi2zx beside zx2native.
-  const beside = zx2native && path.join(path.dirname(zx2native), 'zi2zx');
-  const zi2zx = beside && await executable(beside) ? beside : await ziranTool(command, 'zi2zx', file, folders);
-  return { zi2zx, zx2native };
+  // One checkout's tools agree on the ZX revision; prefer those beside zx2native.
+  const beside = async (name) => {
+    const candidate = zx2native && path.join(path.dirname(zx2native), name);
+    return candidate && await executable(candidate) ? candidate : ziranTool(command, name, file, folders);
+  };
+  return { zi2zx: await beside('zi2zx'), zx2native, zx2wasm: await beside('zx2wasm') };
+}
+
+// Every platform the toolchain lists, with the one `ziran.previewPlatform`
+// selects: { list, platform, tools }.
+async function platformChoice(command, file, folders, vscode) {
+  const tools = await nativeTools(command, file, folders);
+  const list = await platformList({ command, zx2native: tools.zx2native, zx2wasm: tools.zx2wasm });
+  return { list, platform: selectedPlatform(list, configuredPlatform(file, vscode)), tools };
 }
 
 // Directories a module's source can be in: beside the program, the module
@@ -785,36 +809,46 @@ async function pipelineViews(context) {
     file.binary ? { ...file, binary: { ...file.binary } } : { ...file }) }));
 }
 
-// The direct native backend: zx2native lowers the pipeline's ZX to the native
-// map and ELF; Assembly lists the whole ELF and Binary shows its bytes.
+// The direct native backend on CONTEXT.platform: zx2native lowers the
+// pipeline's ZX to the platform's map and ELF or PE, whose Assembly lists the
+// whole file and whose Binary shows its bytes; for Wasm, zx2wasm lowers it to
+// a module shown as WAT and bytes. A platform the toolchain lists as a gap
+// shows that gap on its own stages.
 async function buildNative(context) {
   const { command, file, output, hasMain, noMain } = context;
   if (!hasMain) return { ok: false, message: noMain, views: [] };
+  const platform = context.platform || { id: DEFAULT_PLATFORM, label: 'Linux x86-64', arch: 'x86_64', os: 'linux',
+    format: 'elf', emit: 'elf', gap: '' };
   const tools = await nativeTools(command, file, context.folders);
-  const missing = [tools.zi2zx ? '' : 'zi2zx', tools.zx2native ? '' : 'zx2native'].filter(Boolean);
+  const lowerer = platform.format === 'wasm' ? 'zx2wasm' : 'zx2native';
+  const missing = [tools.zi2zx ? '' : 'zi2zx', tools[lowerer] ? '' : lowerer].filter(Boolean);
   if (missing.length) return { ok: false, message: missingTools(missing), views: [] };
   const views = await pipelineViews(context);
+  const own = platformStages(platform);
+  const failed = (message) => ({ ok: true, message: '', views: [...views, ...own.map(([id, label]) => failedView(id, label, message))] });
   const { zx, message } = await context.pipeline();
-  if (!zx) {
-    return { ok: true, message: '', views: [...views, failedView('assembly', 'Assembly', message),
-      failedView('binary', 'Binary', message)] };
-  }
+  if (!zx) return failed(message);
   const at = (name) => path.join(output, name);
   try {
-    await toolStep(tools.zx2native, 'zx2native', 'final native map',
-      ['--emit', 'map', '-o', at('final.map.json'), zx], output);
-    await toolStep(tools.zx2native, 'zx2native', 'final ELF',
-      ['--emit', 'elf', '-o', at('final.elf'), zx], output);
+    const built = await platformArtifact(platform, zx, output, 'final', tools, runCommand);
+    if (built.problem) return failed(built.problem);
+    if (platform.format === 'wasm') {
+      views.push(view('text', 'WAT', [{ name: 'final.wat', text: await watText(built.file) }]),
+        view('binary', 'Binary', [await binaryFile(built.file)]));
+      return { ok: true, message: '', views };
+    }
+    await toolStep(tools.zx2native, 'zx2native', 'final native map', ['--target', platform.arch, '--platform', platform.os,
+      '--emit', 'map', '-o', at('final.map.json'), zx], output);
     const map = JSON.parse(await fs.readFile(at('final.map.json'), 'utf8'));
-    const listing = await elfListing(at('final.elf'), map, await ownModules(file), output);
-    const binary = await binaryFile(at('final.elf'));
+    const listing = await binaryListing(built.file, map, await ownModules(file), output);
+    const binary = await binaryFile(built.file);
     binary.binary.regions = listing.regions;
     binary.binary.filterLabel = listing.filterLabel;
-    views.push(view('assembly', 'Assembly', [{ name: 'final.disasm', text: cut(listing.text, at('final.disasm')),
-      filtered: cut(listing.program, at('final.disasm')), filterLabel: listing.filterLabel }]),
+    views.push(view('assembly', 'Assembly', [{ name: 'final.disasm', text: cut(listing.text, built.file),
+      filtered: cut(listing.program, built.file), filterLabel: listing.filterLabel }]),
     view('binary', 'Binary', [binary]));
   } catch (error) {
-    views.push(failedView('assembly', 'Assembly', error.message), failedView('binary', 'Binary', error.message));
+    return failed(error.message);
   }
   return { ok: true, message: '', views };
 }
@@ -857,7 +891,8 @@ async function buildTarget(command, target, file, workDirectory, paths, options 
   const work = path.join(workDirectory, `${target}.inspect`);
   await cleanDirectory(output);
   await fs.mkdir(work, { recursive: true });
-  const context = { ...await targetContext(command, file, output, paths, options), work, target };
+  const context = { ...await targetContext(command, file, output, paths, options), work, target,
+    platform: options.platform || null };
   let pipeline = options.pipeline;
   context.pipeline = () => (pipeline ||= startPipeline(command, file,
     path.join(workDirectory, `${target}.pipeline`), paths, { ...context, targets: [target] }));
@@ -865,7 +900,7 @@ async function buildTarget(command, target, file, workDirectory, paths, options 
     const builder = BUILDERS[target];
     const result = builder ? await builder(context) : await buildSource(context, target);
     // The table, not the builder, decides the tabs and their order.
-    const order = stagesOf(target);
+    const order = stagesOf(target, target === 'native' ? options.platform : null);
     const views = order.map(([id, label]) => {
       const found = result.views.find((item) => item.id === id);
       return found && { ...found, label };
@@ -878,6 +913,6 @@ async function buildTarget(command, target, file, workDirectory, paths, options 
 
 module.exports = {
   DEFAULT_TARGETS, TARGETS, assemblyArguments, buildArgs, buildTarget, bundleArgs, cCompiler,
-  chainFor, commandStd, enabledTargets, importedPackages, importingPrograms, irArgs, listFiles, mainLine,
+  chainFor, commandStd, configuredPlatform, enabledTargets, nativeTools, platformChoice, importedPackages, importingPrograms, irArgs, listFiles, mainLine,
   modulePaths, noMainMessage, ownModules, packageModulePaths, packageRoot, sourceArgs, splitOwn,
   observeCommands, stagesOf, startPipeline, ziranCommand, ziranTool };

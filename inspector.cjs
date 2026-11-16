@@ -1,13 +1,13 @@
 // The target views shared by the Run pane and the Kryon preview: one tab per
 // target, each with the shared stages (Source, LIR, Optimized, ZX) and the
-// target's own output, a file picker with dependencies loaded on request, and
+// target's own output (Native's from the Platform dropdown), a file picker with dependencies loaded on request, and
 // a paged hex view. Binaries stay on disk; the webview asks for bytes.
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash, randomBytes } = require('node:crypto');
 const { binaryRegions } = require('./binary-layout.cjs');
 const { highlightedFile } = require('./highlight.cjs');
-const { TARGETS, buildTarget, enabledTargets, startPipeline } = require('./targets.cjs');
+const { TARGETS, buildTarget, enabledTargets, platformChoice, startPipeline } = require('./targets.cjs');
 
 // The most one hex view request reads from a binary.
 const HEX_REQUEST_LIMIT = 1024 * 1024;
@@ -143,7 +143,8 @@ const INSPECTOR_STYLE = `
   #code-section select { max-width: 100%; }
   #code-section pre { box-sizing: border-box; overflow: auto; white-space: pre; font-family: var(--vscode-editor-font-family), monospace; font-size: var(--vscode-editor-font-size); line-height: 1.35; border: 1px solid var(--vscode-panel-border); padding: 10px; margin: 0; background: var(--vscode-textCodeBlock-background, transparent); }
   #code-section pre.problems { white-space: pre-wrap; color: var(--vscode-errorForeground); border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); }
-  .targets { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; color: var(--vscode-descriptionForeground); }
+  .targets { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; color: var(--vscode-descriptionForeground); }
+  #code-section .targets select { color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border, transparent); padding: 3px 6px; }
   .tabs { display: flex; gap: 2px; flex-wrap: wrap; border-bottom: 1px solid var(--vscode-panel-border); margin-bottom: 8px; }
   #code-section .tab { background: transparent; color: var(--vscode-foreground); border-bottom: 2px solid transparent; }
   #code-section .tab:hover { background: var(--vscode-toolbar-hoverBackground, transparent); }
@@ -379,6 +380,24 @@ const inspector = (() => {
       label.append(box, ' ' + target.label);
       boxes.append(label);
     }
+    // The platform Native lowers to and Run runs on; a gap is listed by name.
+    if (state.platforms && state.platforms.length) {
+      const label = document.createElement('label');
+      const select = document.createElement('select');
+      select.id = 'platform';
+      select.setAttribute('aria-label', 'Platform');
+      for (const platform of state.platforms) {
+        const option = document.createElement('option');
+        option.value = platform.id;
+        option.textContent = platform.gap ? platform.label + ' — ' + platform.gap : platform.label;
+        option.disabled = Boolean(platform.gap) && platform.id !== state.platform;
+        select.append(option);
+      }
+      select.value = state.platform;
+      select.addEventListener('change', () => api.postMessage({ type: 'platform', id: select.value }));
+      label.append('Platform ', select);
+      boxes.append(label);
+    }
     const results = state.results;
     if (!results.some((result) => result.id === selected)) selected = results[0] ? results[0].id : '';
     const tabs = byId('tabs');
@@ -500,7 +519,17 @@ class TargetInspector {
     this.generation = 0;
     this.binaries = new Map();
     this.texts = new Map();
-    Object.assign(state, { targets: TARGETS, enabled: [], results: [], codeRunning: true, generation: 0 });
+    this.choice = null;
+    Object.assign(state, { targets: TARGETS, enabled: [], results: [], codeRunning: true, generation: 0,
+      platforms: [], platform: '' });
+  }
+
+  // The toolchain's platforms and the selected one, shown in the dropdown.
+  async choosePlatform({ command, folders }) {
+    this.choice = await platformChoice(command, this.file, folders || [], this.vscode);
+    this.state.platforms = this.choice.list.map(({ id, label, gap }) => ({ id, label, gap }));
+    this.state.platform = this.choice.platform?.id || '';
+    return this.choice;
   }
 
   workDirectory(file) {
@@ -567,7 +596,10 @@ class TargetInspector {
     const generation = this.generation;
     this.post();
     const work = path.join(this.workDirectory(file), 'targets');
-    const options = { hasMain, noMain, folders };
+    const { platform } = await this.choosePlatform({ command, folders });
+    if (generation !== this.generation) return;
+    this.post();
+    const options = { hasMain, noMain, folders, platform };
     const pipeline = this.state.enabled.length ?
       startPipeline(command, file, path.join(work, 'pipeline'), paths, { ...options, targets: this.state.enabled }) : null;
     pipeline?.catch(() => {});
@@ -583,7 +615,7 @@ class TargetInspector {
     if (generation === this.generation) this.state.codeRunning = false;
   }
 
-  // Webview requests: pages of bytes, dependency texts and target choices.
+  // Webview requests: pages of bytes, dependency texts, target and platform choices.
   // Returns whether MESSAGE was one of them.
   async message(message) {
     if (message.type === 'bytes') { await this.sendBytes(message); return true; }
@@ -595,6 +627,17 @@ class TargetInspector {
         this.vscode.ConfigurationTarget.WorkspaceFolder : this.vscode.ConfigurationTarget.Global;
       this.state.enabled = enabled;
       await this.vscode.workspace.getConfiguration('ziran', uri).update('previewTargets', enabled, scope);
+      this.rerun();
+      return true;
+    }
+    if (message.type === 'platform' && typeof message.id === 'string') {
+      const platform = this.state.platforms.find((item) => item.id === message.id);
+      if (!platform || platform.gap) return true;
+      const uri = this.vscode.Uri.file(this.file);
+      const scope = this.vscode.workspace.getWorkspaceFolder?.(uri) ?
+        this.vscode.ConfigurationTarget.WorkspaceFolder : this.vscode.ConfigurationTarget.Global;
+      this.state.platform = platform.id;
+      await this.vscode.workspace.getConfiguration('ziran', uri).update('previewPlatform', platform.id, scope);
       this.rerun();
       return true;
     }

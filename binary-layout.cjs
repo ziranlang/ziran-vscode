@@ -68,6 +68,98 @@ function parseElf(data) {
   } catch { return null; }
 }
 
+const PE_IMPORT_LIMIT = 4096;
+
+// A PE32 or PE32+ image: DOS header, COFF and optional headers, data
+// directories, section table and imports, each checked against the file.
+function parsePe(data) {
+  try {
+    if (!Buffer.isBuffer(data) || data.length < 0x40 || data[0] !== 0x4d || data[1] !== 0x5a) return null;
+    const fits = (offset, length) => Number.isSafeInteger(offset) && offset >= 0 && length >= 0 && offset + length <= data.length;
+    const peOffset = data.readUInt32LE(0x3c);
+    if (!fits(peOffset, 24) || data.readUInt32LE(peOffset) !== 0x4550) return null;
+    const coff = peOffset + 4;
+    const optional = coff + 20;
+    const optionalSize = data.readUInt16LE(coff + 16);
+    if (!fits(optional, optionalSize) || optionalSize < 2) return null;
+    const magic = data.readUInt16LE(optional);
+    const plus = magic === 0x20b;
+    if (!plus && magic !== 0x10b) return null;
+    const directoryAt = optional + (plus ? 112 : 96);
+    if (optionalSize < (plus ? 112 : 96)) return null;
+    const imageBase = plus ? data.readBigUInt64LE(optional + 24) : BigInt(data.readUInt32LE(optional + 28));
+    if (imageBase > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    const pe = { plus, peOffset, optional, optionalSize, machine: data.readUInt16LE(coff),
+      sectionCount: data.readUInt16LE(coff + 2), characteristics: data.readUInt16LE(coff + 18),
+      entry: data.readUInt32LE(optional + 16), imageBase: Number(imageBase),
+      sectionAlignment: data.readUInt32LE(optional + 32), fileAlignment: data.readUInt32LE(optional + 36),
+      headersSize: data.readUInt32LE(optional + 60), subsystem: data.readUInt16LE(optional + 68),
+      directories: [], sections: [], imports: [] };
+    const directoryCount = Math.min(data.readUInt32LE(directoryAt - 4), Math.floor((optional + optionalSize - directoryAt) / 8));
+    for (let index = 0; index < directoryCount; index++) {
+      pe.directories.push({ rva: data.readUInt32LE(directoryAt + index * 8), size: data.readUInt32LE(directoryAt + index * 8 + 4) });
+    }
+    pe.sectionTable = optional + optionalSize;
+    if (!fits(pe.sectionTable, pe.sectionCount * 40)) return null;
+    for (let index = 0; index < pe.sectionCount; index++) {
+      const at = pe.sectionTable + index * 40;
+      const raw = data.subarray(at, at + 8);
+      const end = raw.indexOf(0);
+      pe.sections.push({ index, name: raw.toString('latin1', 0, end < 0 ? 8 : end),
+        virtualSize: data.readUInt32LE(at + 8), address: data.readUInt32LE(at + 12),
+        rawSize: data.readUInt32LE(at + 16), offset: data.readUInt32LE(at + 20),
+        flags: data.readUInt32LE(at + 36) });
+    }
+    const fileOf = (rva) => {
+      for (const section of pe.sections) {
+        if (rva >= section.address && rva < section.address + Math.max(section.virtualSize, section.rawSize) &&
+            rva - section.address < section.rawSize) return section.offset + rva - section.address;
+      }
+      return rva < pe.headersSize ? rva : -1;
+    };
+    pe.fileOf = fileOf;
+    const text = (rva) => {
+      const at = fileOf(rva);
+      if (at < 0 || !fits(at, 1)) return '';
+      const end = data.indexOf(0, at);
+      return data.toString('latin1', at, end < 0 ? Math.min(data.length, at + 256) : Math.min(end, at + 256));
+    };
+    const imports = pe.directories[1];
+    const descriptors = imports && imports.rva ? fileOf(imports.rva) : -1;
+    for (let at = descriptors; at >= 0 && fits(at, 20) && pe.imports.length < PE_IMPORT_LIMIT; at += 20) {
+      const lookup = data.readUInt32LE(at) || data.readUInt32LE(at + 16);
+      const name = data.readUInt32LE(at + 12);
+      if (!lookup && !name) break;
+      const functions = [];
+      const slots = [];
+      const width = plus ? 8 : 4;
+      const table = data.readUInt32LE(at + 16);
+      for (let thunk = fileOf(lookup); thunk >= 0 && fits(thunk, width) && functions.length < PE_IMPORT_LIMIT; thunk += width) {
+        const value = plus ? data.readBigUInt64LE(thunk) : BigInt(data.readUInt32LE(thunk));
+        if (!value) break;
+        const ordinal = plus ? value >> 63n : value >> 31n;
+        const imported = ordinal ? `#${Number(value & 0xffffn)}` : text(Number(value & 0x7fffffffn) + 2);
+        // The address-table slot the loader fills with this function.
+        slots.push(table + functions.length * width);
+        functions.push(imported);
+      }
+      pe.imports.push({ library: text(name), functions, slots });
+    }
+    return pe;
+  } catch { return null; }
+}
+
+// The section that loads file OFFSET of a PE, and the address it loads at.
+function peLoadedAddress(pe, offset) {
+  for (const section of pe.sections) {
+    const size = section.virtualSize ? Math.min(section.virtualSize, section.rawSize) : section.rawSize;
+    if (offset >= section.offset && offset < section.offset + size) {
+      return { section, address: pe.imageBase + section.address + offset - section.offset };
+    }
+  }
+  return null;
+}
+
 // The segment that loads file OFFSET, and the virtual address it loads at.
 function loadedAddress(elf, offset) {
   for (const segment of elf.segments) {
@@ -192,7 +284,55 @@ function elfRegions(data, elf, map, own) {
   return regions;
 }
 
-const WASM_SECTIONS = ['custom', 'type', 'import', 'function', 'table', 'memory', 'global',
+// A PE's headers, import tables and sections. With a native map, its text is
+// split by function as in an ELF; sections end at their virtual size, so the
+// file alignment after them reads as padding.
+function peRegions(data, pe, map, own) {
+  const regions = [];
+  const add = (start, end, kind, label) => {
+    start = Math.max(0, start); end = Math.min(data.length, end);
+    if (end > start) regions.push({ start, end, kind, label });
+  };
+  add(0, 0x40, 'header', 'DOS header');
+  add(0x40, pe.peOffset, 'header', 'DOS stub');
+  add(pe.peOffset, pe.optional + pe.optionalSize, 'header', 'PE headers');
+  add(pe.sectionTable, pe.sectionTable + pe.sectionCount * 40, 'header', `section headers (${pe.sectionCount})`);
+  const tables = [[1, 'import table'], [12, 'import address table']].map(([index, label]) => {
+    const directory = pe.directories[index];
+    const start = directory && directory.rva ? pe.fileOf(directory.rva) : -1;
+    return start >= 0 ? { start, end: start + directory.size, label } : null;
+  }).filter(Boolean);
+  // Hint and name entries sit beside the import descriptors in their section.
+  const importSection = tables.length && pe.sections.find((section) =>
+    tables[0].start >= section.offset && tables[0].start < section.offset + section.rawSize);
+  const taken = [...tables];
+  const image = map?.image;
+  const mapped = image && [image.text_file_offset, image.text_size].every(Number.isSafeInteger) &&
+    image.text_file_offset >= 0 && image.text_file_offset + image.text_size <= data.length;
+  if (mapped) {
+    const entry = Number.isSafeInteger(image.text_virtual_address) ? pe.imageBase + pe.entry - image.text_virtual_address : -1;
+    for (const part of textParts(map, own, entry)) {
+      add(image.text_file_offset + part.begin, image.text_file_offset + part.end, part.kind, part.label);
+    }
+    taken.push({ start: image.text_file_offset, end: image.text_file_offset + image.text_size });
+    if ([image.data_file_offset, image.data_size].every(Number.isSafeInteger) && image.data_size > 0) {
+      add(image.data_file_offset, image.data_file_offset + image.data_size, 'data', 'data');
+      taken.push({ start: image.data_file_offset, end: image.data_file_offset + image.data_size });
+    }
+  }
+  for (const table of tables) add(table.start, table.end, 'header', table.label);
+  for (const section of pe.sections) {
+    const size = section.virtualSize ? Math.min(section.virtualSize, section.rawSize) : section.rawSize;
+    const executable = (section.flags & 0x20) || (section.flags & 0x20000000);
+    const kind = section === importSection || /^\.(idata|reloc|pdata|xdata|edata|tls)/.test(section.name) ? 'header' :
+      executable ? 'code' : (section.flags & 0x40) || (section.flags & 0x80) ? 'data' : 'header';
+    const label = section === importSection && kind === 'header' ? `${section.name} (imports)` : section.name || `section ${section.index}`;
+    for (const piece of subtract(section.offset, section.offset + size, taken)) add(piece.start, piece.end, kind, label);
+  }
+  return regions;
+}
+
+const WASM_SECTIONS =['custom', 'type', 'import', 'function', 'table', 'memory', 'global',
   'export', 'start', 'element', 'code', 'data', 'data count', 'tag'];
 
 function wasmRegions(data) {
@@ -269,9 +409,9 @@ function coverFile(data, regions) {
   return covered;
 }
 
-// The regions of DATA, an ELF, Wasm module or ZX bundle, and the label of
+// The regions of DATA, an ELF, PE, Wasm module or ZX bundle, and the label of
 // the toggle that hides everything but the program. MAP is a Ziran native
-// map for the ELF and OWN the program's module names. Unknown files are null.
+// map for the ELF or PE and OWN the program's module names. Unknown files are null.
 function binaryRegions(data, { map = null, own = new Set() } = {}) {
   try {
     if (!Buffer.isBuffer(data) || data.length < 8) return null;
@@ -281,6 +421,10 @@ function binaryRegions(data, { map = null, own = new Set() } = {}) {
       const elf = parseElf(data);
       if (elf) regions = elfRegions(data, elf, map, own);
       filterLabel = 'Hide ELF parts';
+    } else if (data[0] === 0x4d && data[1] === 0x5a) {
+      const pe = parsePe(data);
+      if (pe) regions = peRegions(data, pe, map, own);
+      filterLabel = 'Hide PE parts';
     } else if (data.subarray(0, 8).equals(Buffer.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]))) {
       regions = wasmRegions(data);
     } else if (data[0] === 0x5a && data[1] === 0x58 && data[2] === 0 && data[3] === 0) {
@@ -291,4 +435,5 @@ function binaryRegions(data, { map = null, own = new Set() } = {}) {
   } catch { return null; }
 }
 
-module.exports = { EXECUTABLE_KINDS, PROGRAM_KINDS, binaryRegions, flagText, loadedAddress, parseElf, textParts };
+module.exports = { EXECUTABLE_KINDS, PROGRAM_KINDS, binaryRegions, flagText, loadedAddress, parseElf, parsePe,
+  peLoadedAddress, textParts };
