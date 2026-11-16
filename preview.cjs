@@ -206,11 +206,11 @@ function previewHtml(nonce) {
   header button { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; padding: 5px 9px; }
   #status, #window-status { color: var(--vscode-descriptionForeground); }
   #build-output { box-sizing: border-box; overflow: auto; white-space: pre; font-family: var(--vscode-editor-font-family), monospace; font-size: var(--vscode-editor-font-size); line-height: 1.3; border: 1px solid var(--vscode-panel-border); padding: 10px; }
-  .window { border: 1px solid var(--vscode-panel-border); border-radius: 8px; overflow: hidden; background: var(--vscode-terminal-background, #10141a); }
+  .window { border: 1px solid var(--vscode-panel-border); border-radius: 8px; overflow: hidden; padding: 0; background: var(--vscode-editor-background); }
   .window-bar { display: flex; align-items: center; gap: 6px; padding: 7px 10px; background: var(--vscode-titleBar-activeBackground, #252526); border-bottom: 1px solid var(--vscode-panel-border); }
   .window-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--vscode-descriptionForeground); opacity: .55; }
   #window-title { margin-left: 8px; font-size: .85rem; }
-  #app { width: 100%; height: 70vh; border: 0; background: white; }
+  #app { display: block; width: 100%; height: 70vh; margin: 0; padding: 0; border: 0; background: transparent; color-scheme: normal; }
   #build-output:empty { display: none; }
 ${INSPECTOR_STYLE}
 </style></head><body>
@@ -303,13 +303,13 @@ class Preview {
       send: (message) => { if (!this.disposed) this.panel.webview.postMessage(message); },
       storage: this.storage, rerun: () => this.inspectTargets() });
     this.panel.webview.html = previewHtml(randomBytes(16).toString('hex'));
-    const watchTarget = location.standalone ? path.dirname(this.source) : this.root;
-    const watchRoot = vscode.workspace.getWorkspaceFolder?.(vscode.Uri.file(watchTarget))?.uri.fsPath || watchTarget;
+    this.watchers = [];
+    this.watch();
     this.disposables = [
       this.panel.onDidDispose(() => this.dispose()),
       this.panel.webview.onDidReceiveMessage((message) => this.message(message)),
       vscode.workspace.onDidSaveTextDocument((document) => {
-        if (document.uri.scheme === 'file' && previewInput(watchRoot, document.uri.fsPath)) {
+        if (document.uri.scheme === 'file' && previewInput(this.watchRoot, document.uri.fsPath)) {
           this.schedule();
         }
       }),
@@ -319,15 +319,47 @@ class Preview {
         this.inspectTargets();
       }),
     ];
-    for (const pattern of ['**/*.zi', '**/kryon.toml', '**/ziran{,.local}.toml', '**/ziran.lock']) {
-      const watcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(vscode.Uri.file(watchRoot), pattern));
-      const changed = (uri) => { if (previewInput(watchRoot, uri.fsPath)) this.schedule(); };
-      this.disposables.push(watcher, watcher.onDidChange(changed),
-        watcher.onDidCreate(changed), watcher.onDidDelete(changed));
-    }
     context.subscriptions.push(this);
     this.run();
+  }
+
+  // Rebuilds follow the files of the previewed project or program.
+  watch() {
+    for (const watcher of this.watchers) watcher.dispose();
+    const { vscode } = this;
+    const target = this.location.standalone ? path.dirname(this.source) : this.root;
+    this.watchRoot = vscode.workspace.getWorkspaceFolder?.(vscode.Uri.file(target))?.uri.fsPath || target;
+    this.watchers = [];
+    for (const pattern of ['**/*.zi', '**/kryon.toml', '**/ziran{,.local}.toml', '**/ziran.lock']) {
+      const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(vscode.Uri.file(this.watchRoot), pattern));
+      const changed = (uri) => { if (previewInput(this.watchRoot, uri.fsPath)) this.schedule(); };
+      this.watchers.push(watcher, watcher.onDidChange(changed),
+        watcher.onDidCreate(changed), watcher.onDidDelete(changed));
+    }
+  }
+
+  // The preview follows the editor's active .zi file: a file of the
+  // previewed project changes what the target tabs inspect; another Kryon
+  // program moves the whole preview, live window included.
+  follow(location) {
+    if (this.disposed || !location.source || location.source === this.source) return false;
+    if (location.standalone !== this.location.standalone ||
+        (!location.standalone && location.root !== this.root)) return false;
+    this.source = location.source;
+    if (location.standalone) {
+      void stopOwnedProcess(this.windowChild);
+      this.windowChild = null;
+      this.location = location;
+      this.root = standaloneRoot(location.source, this.storage);
+      Object.assign(this.state, { html: '', windowStatus: '', windowOutput: '', windowBuilding: false });
+      this.watch();
+    }
+    const title = path.basename(this.source, '.zi');
+    this.panel.title = `Preview: ${title}`;
+    this.state.project = title;
+    this.schedule();
+    return true;
   }
 
   reveal() { this.panel.reveal(this.vscode.ViewColumn.Beside); }
@@ -337,7 +369,7 @@ class Preview {
     this.disposed = true;
     clearTimeout(this.timer);
     void stopOwnedProcess(this.windowChild);
-    for (const disposable of this.disposables) disposable.dispose();
+    for (const disposable of [...this.disposables, ...this.watchers]) disposable.dispose();
     this.inspector.dispose();
   }
 
@@ -363,40 +395,46 @@ class Preview {
     await this.inspector.message(message);
   }
 
-  // The program's C executable as one owned process with its own window;
-  // opening it again replaces the previous one.
+  // The program's ZX bundle run natively, as one owned process with its own
+  // window; opening it again replaces the previous one. There is no C or
+  // engine fallback: a program native code cannot run shows the named gap.
   async openWindow() {
     if (this.disposed || !this.state.program) return;
     await stopOwnedProcess(this.windowChild);
     this.windowChild = null;
     Object.assign(this.state, { windowStatus: 'Building the window…', windowOutput: '', windowBuilding: true });
     this.post();
-    const { buildArgs, modulePaths, packageRoot, ziranCommand } = require('./targets.cjs');
+    const { bundleArgs, modulePaths, packageRoot, ziranCommand, ziranTool } = require('./targets.cjs');
     const command = await ziranCommand(this.source, this.vscode);
     const paths = await modulePaths(this.source, command, this.vscode);
     const project = await packageRoot(this.source);
     const cwd = project || path.dirname(this.source);
     const key = createHash('sha256').update(this.source).digest('hex').slice(0, 16);
-    const output = path.join(this.storage, 'window-c', key);
+    const output = path.join(this.storage, 'window-zx', key);
     await fs.rm(output, { recursive: true, force: true });
     await fs.mkdir(output, { recursive: true });
-    const built = await runCommand(command,
-      buildArgs('c', this.source, output, paths, Boolean(project), { exe: true }), cwd);
+    const bundle = path.join(output, `${path.basename(this.source, '.zi')}.zx`);
+    const built = await runCommand(command, bundleArgs(this.source, paths, bundle, Boolean(project)), cwd);
     if (this.disposed) return;
-    const program = path.join(output, path.basename(this.source, '.zi'));
-    if (built.code !== 0 || !(await exists(program))) {
-      Object.assign(this.state, { windowBuilding: false,
-        windowStatus: built.code === 0 ? 'The C build wrote no executable' : 'C build failed',
-        windowOutput: (built.stderr || built.stdout).trim() });
+    const failed = (windowStatus, windowOutput) => {
+      Object.assign(this.state, { windowBuilding: false, windowStatus, windowOutput });
       this.post();
-      return;
+    };
+    if (built.code !== 0 || !(await exists(bundle))) {
+      return failed(built.code === 0 ? 'The ZX build wrote no bundle' : 'ZX build failed', (built.stderr || built.stdout).trim());
     }
+    const folders = (this.vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath);
+    const player = await ziranTool(command, 'zi2zx', this.source, folders);
+    if (this.disposed) return;
+    if (!player) return failed('zi2zx was not found', 'Build it in a Ziran checkout with `make`.');
     // The window needs the editor's display, so it keeps the full environment.
-    const child = spawn(program, [], { cwd, env: process.env, stdio: ['ignore', 'ignore', 'pipe'],
-      windowsHide: false, detached: process.platform !== 'win32' });
+    const child = spawn(player, ['run', '--backend', 'native', bundle], { cwd, env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false, detached: process.platform !== 'win32' });
     this.windowChild = child;
-    let errors = '';
-    child.stderr.on('data', (data) => { errors = (errors + data.toString()).slice(-65536); });
+    let text = '';
+    const collect = (data) => { text = (text + data.toString()).slice(-65536); };
+    child.stdout.on('data', collect);
+    child.stderr.on('data', collect);
     child.on('error', (error) => {
       if (this.windowChild !== child) return;
       Object.assign(this.state, { windowStatus: 'Could not open the window', windowOutput: error.message });
@@ -405,8 +443,8 @@ class Preview {
     child.on('close', (code, signal) => {
       if (this.windowChild !== child) return;
       this.windowChild = null;
-      Object.assign(this.state, { windowOutput: code ? errors.trim() : '',
-        windowStatus: signal ? 'Window stopped' : code ? `Window exited with ${code}` : 'Window closed' });
+      Object.assign(this.state, { windowOutput: text.trim(),
+        windowStatus: signal ? 'Window stopped' : code ? `Native run failed (exit ${code})` : 'Window closed' });
       this.post();
     });
     Object.assign(this.state, { windowStatus: 'Window open', windowBuilding: false });
@@ -502,8 +540,24 @@ function activatePreview(context, vscode) {
     if (kryon) runButton.show(); else runButton.hide();
     vscode.commands.executeCommand('setContext', 'ziran.kryonProject', kryon);
   };
+  // A preview follows the active .zi editor; other editors leave it alone.
+  const followEditor = async (editor) => {
+    const file = editor?.document.uri.scheme === 'file' ? editor.document.uri.fsPath : '';
+    if (!file.endsWith('.zi')) return;
+    const location = await previewLocation(file);
+    if (!location) return;
+    for (const [key, preview] of previews) {
+      if (key !== location.key && !(location.standalone && preview.location.standalone && !previews.has(location.key))) continue;
+      const before = preview.location.key;
+      if (preview.follow(location) && preview.location.key !== before) {
+        previews.delete(before);
+        previews.set(preview.location.key, preview);
+      }
+      return;
+    }
+  };
   context.subscriptions.push(
-    vscode.window.onDidChangeActiveTextEditor(updateRunButton),
+    vscode.window.onDidChangeActiveTextEditor((editor) => { updateRunButton(); void followEditor(editor); }),
     vscode.workspace.onDidChangeWorkspaceFolders(updateRunButton),
     vscode.languages.registerCodeLensProvider({ language: 'ziran', scheme: 'file' }, {
       async provideCodeLenses(document) {
@@ -535,7 +589,9 @@ function activatePreview(context, vscode) {
     if (previews.has(location.key)) { previews.get(location.key).reveal(); return; }
     const preview = new Preview(location, context, vscode);
     previews.set(location.key, preview);
-    preview.panel.onDidDispose(() => previews.delete(location.key));
+    preview.panel.onDidDispose(() => {
+      for (const [key, shown] of previews) if (shown === preview) previews.delete(key);
+    });
   }));
 }
 

@@ -27,11 +27,19 @@ pane beside a `.zi` file. Like the Kryon preview it shows, top to bottom:
   syntax highlighting and a file picker; the checkboxes choose the targets and
   save them to `ziran.previewTargets`.
 
-Every target shows the whole pipeline: **Source**, **LIR**, **Optimized**
+Every target shows one chain, in one order, from the same builds: **Source**,
+**ZIR** (the checked program, listed by `zi-inspect`), **LIR**, **Optimized**
 (the verified instructions read back from ZX and the optimization report) and
-**ZX**, then its own output: **C** or **Go** with their **Assembly** and
-**Binary**, **WAT** and **Binary** for WebAssembly, and **Assembly** and
-**Binary** for Native.
+**ZX**. A target shows the stages it really uses, then its own output: C and Go
+compile the checked ZIR directly, so they show **Source** and **ZIR**, then
+**C** or **Go** with their **Assembly** and **Binary**; WebAssembly and Native
+go through ZX, so they show every stage, then **WAT** and **Binary**, or
+**Assembly** and **Binary**. `TARGET_STAGES` in `targets.cjs` is the one table
+behind both the tabs and the commands each build runs. Source and ZIR list the
+program's own modules first, then its dependencies, read only when picked from
+the file dropdown above the code. Ziran source is colored with this
+extension's own grammar, and the other tabs with light highlighting, in the
+editor's light or dark theme.
 
 Saving a `.zi` file in the same directory reruns everything; **Run again** does
 it on demand. A file without `main :: ()` still shows its source and generated
@@ -126,9 +134,13 @@ pane, and the program's real interface runs live inside the frame. The
 extension keeps a private project for the file in its own storage, with one
 canvas profile, and the Kryon tool builds the program's `main` for the page.
 
-**Open in window** builds the program as a C executable and runs it in a
-window of its own; opening it again replaces that window, and closing the
-preview ends it.
+**Open in window** bundles the program to the same ZX the **ZX** tab shows and
+runs it natively (`zi2zx run --backend native`), in one process; opening it
+again replaces that process, and closing the preview ends it. There is no
+fallback to C or the portable engine: if native code cannot run the program,
+the pane shows the tool's named gap. The preview follows the active `.zi`
+editor, and its live frame has no padding and a transparent page over the
+editor's background.
 
 The portable Run pane does not run such a program: the portable runtime has no
 window host, so `App.Run` would return its failure status and the pane would
@@ -200,9 +212,9 @@ Maintained example sources are never edited.
 
 Set `ZIRAN_PREVIEW_WINDOW=1` and `ZIRAN_RUN_TEST=1` with `ZIRAN_PREVIEW_PROJECT`
 at a Kryon checkout and `ZIRAN_PREVIEW_ENTRY=examples/window.zi` to test a Kryon
-program: Run must open the live embedded canvas, **Open in window** must map
-exactly one real window on the private display, and the targets under the
-window must show C, Go, WebAssembly and Native with `window.c` first and the
+program: Run must open the live embedded canvas, **Open in window** must start
+exactly one native ZX process and build no C, and the targets under the
+window must show their stage tabs with `window.c` first and the
 Kryon modules under Dependencies.
 
 For generated-code Preview on an existing source file, use

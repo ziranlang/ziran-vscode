@@ -2,9 +2,15 @@
 
 ## Unreleased
 
+- Show every target's real stages from one table: Source, ZIR, LIR, Optimized, ZX, then the target's output. C and Go compile the checked ZIR directly and show Source and ZIR only; WebAssembly and Native show the whole chain. Shared stages are built once, ZIR is back as a stage (listed by the toolchain that wrote it), and C, Go, LIR and ZX steps no longer run for tabs that do not use them.
+- Show the file dropdown on Source and ZIR as well as the generated code: the program's own modules first, dependency modules loaded only when picked.
+- Color the Source tab with the extension's own Ziran grammar, dependency sources included, and add light highlighting for assembly.
+- **Open in window** now bundles the program to ZX and runs it natively with `zi2zx run --backend native`, one process, replaced by the next click and ended with the preview; no C or engine fallback, and a gap is shown by name.
+- The Kryon preview follows the active `.zi` editor, drops the padding around the live frame and its empty controls strip, and makes the frame's page transparent over the editor's background.
+
 - Show the whole ELF in Native's **Assembly**, which was empty: Ziran's direct ELFs carry no section headers, so `objdump -d` found nothing to disassemble. The view now lists the ELF header, the program headers and every region of the file in order, with code disassembled by `objdump` at its load address under `<module:function>` labels from the native map, and data as bytes. **Hide ELF parts** leaves only the program's own functions; for `hello.zi` that is `<hello:main>`. The disassembler follows the ELF's machine.
 - Show the whole file in every **Binary** and ZX view, each region (header, padding, runtime, code, data, section) under a label row with its offsets. The same toggle keeps only the program's code and data, and going to a hidden offset shows the whole file again.
-- Show the whole pipeline for every target: **Source**, **LIR**, **Optimized** and **ZX**, built once and shared, then the target's own output (C or Go with Assembly and Binary, WAT and Binary, or Native's Assembly and Binary). The separate ZIR tab is gone.
+- Show the whole pipeline for every target, built once and shared, then the target's own output (C or Go with Assembly and Binary, WAT and Binary, or Native's Assembly and Binary).
 - Remove the views' description lines and the generated comment headers above Native's disassembly.
 - Show the Kryon preview's targets right under its live window, for the previewed source or the project's entry, rebuilt on every save. **Inspect Targets** is removed from the preview and the editor title bar. **Open in window** runs a Kryon program's C executable in a window of its own; opening it again replaces that window and closing the preview ends it.
 - Show only the program's own code in the Run pane's generated views. For Kryon's 6-line `examples/window.zi`, C Source opens `window.c` (546 bytes with `window.h`) instead of the 139 C files (832 KB) the build writes for the Kryon desktop host. Every other module is listed under **Dependencies** and is read, compiled to assembly or inspected only when picked. The same applies to Go.

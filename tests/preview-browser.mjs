@@ -27,6 +27,12 @@ try {
     await fs.mkdir(path.join(project, '.vscode'));
     await fs.writeFile(path.join(project, '.vscode/settings.json'), JSON.stringify({'ziran.kryonCommand':launcher}));
   }
+  // ZIRAN_PREVIEW_THEME picks the editor's color theme, for light and dark checks.
+  if (process.env.ZIRAN_PREVIEW_THEME) {
+    await fs.mkdir(path.join(runtime, 'profile/User'), { recursive: true });
+    await fs.writeFile(path.join(runtime, 'profile/User/settings.json'),
+      JSON.stringify({ 'workbench.colorTheme': process.env.ZIRAN_PREVIEW_THEME }));
+  }
   const net = await import('node:net');
   const server = net.createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -97,13 +103,29 @@ try {
     }
     assert.ok(pixels.painted > 0 && pixels.painted === pixels.width * pixels.height, JSON.stringify(pixels));
     assert.notEqual((await app.locator('body').textContent()).trim(), '1');
+    // The canvas fills its frame edge to edge with no padding or controls strip,
+    // and is drawn at device pixels, not scaled by CSS.
+    const geometry = await app.locator('canvas').first().evaluate(canvas => {
+      const box = canvas.getBoundingClientRect();
+      return { x: box.x, y: box.y, width: box.width, height: box.height, frameWidth: innerWidth, frameHeight: innerHeight,
+        pixelWidth: canvas.width, pixelHeight: canvas.height, ratio: devicePixelRatio,
+        corner: [...canvas.getContext('2d').getImageData(0, 0, 1, 1).data] };
+    });
+    // The app keeps its own width (window.zi asks for 320) from the frame's corner.
+    assert.deepEqual([geometry.x, geometry.y, geometry.height], [0, 0, geometry.frameHeight], JSON.stringify(geometry));
+    assert.ok(geometry.width > 0 && geometry.width <= geometry.frameWidth, JSON.stringify(geometry));
+    assert.equal(geometry.pixelWidth, Math.round(geometry.width * geometry.ratio), JSON.stringify(geometry));
+    assert.equal(geometry.pixelHeight, Math.round(geometry.height * geometry.ratio), JSON.stringify(geometry));
+    console.log('Live frame geometry:', JSON.stringify(geometry));
+    if (process.env.ZIRAN_PREVIEW_SHOTS) {
+      await preview.locator('#window').screenshot({ path: path.join(process.env.ZIRAN_PREVIEW_SHOTS, `window-${process.env.ZIRAN_PREVIEW_THEME ? 'light' : 'dark'}.png`) });
+    }
     console.log('Real window.zi runs as an embedded Kryon canvas, not portable scalar output:', pixels);
-    // Open in window runs the C-generated program as one owned process whose
-    // real OS window maps on this private display.
-    const windows = () => execFileSync('xwininfo', ['-root', '-tree'], { encoding: 'utf8' })
-      .split('\n').filter(line => /"Window": \("window" "window"\)/.test(line)).length;
+    // Open in window runs the program's ZX bundle natively as one owned
+    // process, with no C executable and no engine fallback. A program native
+    // code cannot run yet shows its outcome in the pane instead of a window.
     const owned = () => {
-      try { return execFileSync('pgrep', ['-f', `${runtime}/profile/.*/window-c/`], { encoding: 'utf8' }).trim().split('\n').filter(Boolean); }
+      try { return execFileSync('pgrep', ['-f', `zi2zx run --backend native ${runtime}/profile/.*/window-zx/`], { encoding: 'utf8' }).trim().split('\n').filter(Boolean); }
       catch { return []; }
     };
     // Another installed extension may leave a quick input open over the pane.
@@ -112,13 +134,14 @@ try {
     for (const round of [1, 2]) {
       await dismiss();
       await preview.locator('#open-window').click();
-      await preview.waitForFunction(() => document.querySelector('#window-status').textContent === 'Window open', null, { timeout: 180000 });
-      for (let attempt = 0; attempt < 100 && windows() !== 1; attempt++) await app.waitForTimeout(100);
-      assert.equal(windows(), 1, `round ${round}: exactly one mapped Window`);
-      assert.equal(owned().length, 1, `round ${round}: exactly one owned window process`);
+      await preview.waitForFunction(() => /^(Window open|Window closed|Native run failed)/.test(document.querySelector('#window-status').textContent), null, { timeout: 180000 });
+      assert.ok(owned().length <= 1, `round ${round}: never more than one owned native process`);
     }
-    windowProcess = owned()[0];
-    console.log('Open in window mapped one real "Window"; opening it again replaced the owned process.');
+    await preview.waitForFunction(() => !document.querySelector('#open-window').disabled &&
+      /^(Window open|Window closed|Native run failed)/.test(document.querySelector('#window-status').textContent), null, { timeout: 180000 });
+    const outcome = await preview.locator('#window-status').textContent();
+    assert.equal(execFileSync('sh', ['-c', `find ${runtime}/profile -type d -name window-c | wc -l`], { encoding: 'utf8' }).trim(), '0', 'no C window build');
+    console.log('Open in window ran the ZX bundle natively (no C build); outcome:', outcome);
     // The target views sit under the live window in the same pane.
     await preview.waitForFunction(() => document.querySelectorAll('#tabs [role=tab]').length === 4 &&
       !document.querySelector('#tabs').textContent.includes('…'), null, { timeout: 600000 });
@@ -126,7 +149,7 @@ try {
       ['C', 'Go', 'Wasm', 'Native']);
     await preview.locator('#tabs').getByRole('tab', { name: 'C', exact: true }).click();
     assert.deepEqual(await preview.locator('#views').getByRole('tab').allTextContents(),
-      ['Source', 'LIR', 'Optimized', 'ZX', 'C', 'Assembly', 'Binary']);
+      ['Source', 'ZIR', 'C', 'Assembly', 'Binary']);
     assert.match(await preview.locator('#code').textContent(), /App\.Run|main ::/);
     await preview.locator('#views').getByRole('tab', { name: 'C', exact: true }).click();
     // window.c comes first; a picker appears only when the program has more own files.
@@ -144,7 +167,7 @@ try {
     }, own, { timeout: 60000 });
     await picker.selectOption('');
     assert.equal(await preview.locator('#code').textContent(), own);
-    console.log('Under the window: C, Go, Wasm and Native with the shared stages, window.c first and Kryon modules under Dependencies.');
+    console.log('Under the window: C, Go, Wasm and Native with Source and ZIR (and LIR, Optimized, ZX for Wasm and Native), window.c first and Kryon modules under Dependencies.');
   } else {
     await app.locator('canvas').waitFor();
     const pixels = await app.locator('canvas').first().evaluate(canvas=>({width:canvas.width,height:canvas.height}));

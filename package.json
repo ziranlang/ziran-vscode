@@ -194,12 +194,12 @@
   },
   "devDependencies": {
     "@vscode/vsce": "^3.6.0",
-    "playwright-core": "^1.65.0",
-    "vscode-oniguruma": "^2.0.1",
-    "vscode-textmate": "^9.3.2"
+    "playwright-core": "^1.65.0"
   },
   "dependencies": {
     "@iarna/toml": "^2.2.5",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2",
     "wabt": "1.0.39"
   }
 }

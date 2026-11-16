@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { parse } = require('@iarna/toml');
-const { manifestPath, projectRoot, runCommand, safeEnvironment } = require('./preview.cjs');
+const { manifestPath, projectRoot, runCommand: spawnCommand, safeEnvironment } = require('./preview.cjs');
 const { elfListing } = require('./disassembly.cjs');
 
 const TARGETS = [
@@ -14,6 +14,38 @@ const TARGETS = [
   { id: 'native', label: 'Native' },
 ];
 const DEFAULT_TARGETS = ['c', 'go', 'wasm', 'native'];
+
+// The one table behind every tab list and every build. All targets share one
+// chain, Source -> ZIR -> LIR -> Optimized -> ZX; a target shows its first
+// SHARED stages of it, then its own output. Builds run only the steps for
+// stages some enabled target shows, so no tab appears without its step and no
+// step runs without a tab.
+const CHAIN = [['source', 'Source'], ['zir', 'ZIR'], ['lowered', 'LIR'], ['optimized', 'Optimized'], ['zx', 'ZX']];
+const TARGET_STAGES = {
+  c: { shared: 2, own: [['generated', 'C'], ['assembly', 'Assembly'], ['binary', 'Binary']] },
+  go: { shared: 2, own: [['generated', 'Go'], ['assembly', 'Assembly'], ['binary', 'Binary']] },
+  wasm: { shared: 5, own: [['text', 'WAT'], ['binary', 'Binary']] },
+  native: { shared: 5, own: [['assembly', 'Assembly'], ['binary', 'Binary']] },
+};
+// Source code generators other than the four above stop after ZIR too.
+function stagesOf(target) {
+  const entry = TARGET_STAGES[target] ||
+    { shared: 2, own: [['generated', TARGETS.find((item) => item.id === target)?.label || target]] };
+  return [...CHAIN.slice(0, entry.shared), ...entry.own];
+}
+function chainFor(targets) {
+  const depth = Math.max(2, ...targets.map((target) => (TARGET_STAGES[target] || { shared: 2 }).shared));
+  return CHAIN.slice(0, depth).map(([id]) => id);
+}
+
+// Every external command a build runs is reported to the observer, so tests
+// can check each target's tabs against what its build actually executed.
+const observer = { listener: null };
+function observeCommands(listener) { observer.listener = listener; }
+function runCommand(tool, args, cwd) {
+  observer.listener?.(path.basename(tool), args);
+  return spawnCommand(tool, args, cwd);
+}
 // Listings larger than this are cut; the hex view pages binaries instead.
 const VIEW_TEXT_LIMIT = 4 * 1024 * 1024;
 
@@ -445,6 +477,7 @@ async function cleanDirectory(directory, keep = ['.objects']) {
 // Run COMMAND with one output stream written straight to FILE, so long
 // listings are never held in memory; the other stream is kept for messages.
 async function runToFile(command, args, cwd, file, stream = 'stdout') {
+  observer.listener?.(path.basename(command), args);
   await fs.mkdir(path.dirname(file), { recursive: true });
   const descriptor = fsSync.openSync(file, 'w');
   try {
@@ -597,16 +630,17 @@ async function buildWasm(context) {
   ] };
 }
 
-// The program's .zir for main, for the direct backend.
+// The checked program's .zir files. A program is checked from its main; a
+// module without one is checked as it is.
 async function checkedProgram(context, directory) {
-  const { command, file, paths, project, cwd } = context;
-  const entry = `${moduleName(file)}:main`;
+  const { command, file, paths, project, cwd, hasMain } = context;
+  const entry = hasMain ? `${moduleName(file)}:main` : '';
   await fs.rm(directory, { recursive: true, force: true });
   const saved = await runCommand(command, irArgs(file, paths, directory, project, entry), cwd);
   if (saved.code !== 0) throw new Error(`checked IR: ${problem(saved, 'ziran ir')}`);
   const input = path.join(directory, `${moduleName(file)}.zir`);
   if (!(await exists(input))) throw new Error(`checked IR: ziran ir wrote no ${path.basename(input)}`);
-  return { entry, input };
+  return { entry, input, names: (await listFiles(directory)).filter((name) => name.endsWith('.zir')) };
 }
 
 async function toolStep(tool, label, stage, args, cwd) {
@@ -631,33 +665,106 @@ async function nativeTools(command, file, folders) {
   return { zi2zx, zx2native };
 }
 
-const PIPELINE_STAGES = [['lowered', 'LIR'], ['optimized', 'Optimized'], ['zx', 'ZX']];
+// Directories a module's source can be in: beside the program, the module
+// paths, and the project's module roots.
+async function sourceRoots(context) {
+  const roots = [path.dirname(context.file), ...context.paths.map((entry) => entry.replace(/^[A-Za-z_][\w-]*=/, ''))];
+  if (context.project) {
+    const manifest = await readManifest(context.cwd);
+    const declared = Array.isArray(manifest?.package?.module_roots) ? manifest.package.module_roots : [];
+    for (const entry of declared) roots.push(path.resolve(context.cwd, entry));
+  }
+  return [...new Set(roots)];
+}
 
-// The stages every target shares: source -> checked .zir -> LIR -> linked
-// ZX (ASSEMBLY/vscode-inspection.md). Each completed stage is a view; the
-// stage that fails and those after it show its reason.
+// The source behind a checked module's name: `std_math` is std/math.zi.
+async function findSource(module, roots) {
+  const std = module.startsWith('std_');
+  for (const root of roots) {
+    const candidate = std ? (path.basename(root) === 'std' ? path.join(root, `${module.slice(4)}.zi`) : '') :
+      path.join(root, `${module}.zi`);
+    if (candidate && await exists(candidate)) return { path: candidate, name: std ? `std/${module.slice(4)}.zi` : `${module}.zi` };
+  }
+  return null;
+}
+
+// The Source stage: the program's own modules, then the sources of the modules
+// it imports, read only when picked.
+async function sourceView(context, names) {
+  const { file } = context;
+  const own = await ownModules(file);
+  const modules = names.map((name) => name.replace(/\.zir$/, '')).filter((name) => name !== moduleName(file));
+  const files = [{ name: path.basename(file), text: await readText(file) }];
+  const dependencies = [];
+  const roots = await sourceRoots(context);
+  for (const module of modules) {
+    if (own.has(module)) {
+      files.push({ name: `${module}.zi`, text: await readText(path.join(path.dirname(file), `${module}.zi`)) });
+      continue;
+    }
+    const found = await findSource(module, roots);
+    if (found) dependencies.push(dependencyFile(found.name, () => readText(found.path), (await fs.stat(found.path)).size));
+  }
+  return view('source', 'Source', [...files, ...dependencies]);
+}
+
+// The ZIR stage: `ziran inspect` listings of the checked modules.
+async function zirView(context, directory, names) {
+  const { command, file, cwd, output } = context;
+  // The tool of the toolchain that wrote the ZIR, which a project may pin.
+  const tool = await ziranTool(command, 'zi-inspect', file, context.folders);
+  const inspect = async (name) => {
+    const listing = path.join(output, 'zir', `${name}.txt`);
+    const inspected = await runToFile(tool || command, [...(tool ? [] : ['inspect']), path.join(directory, name)], cwd, listing);
+    if (inspected.code !== 0) throw new Error(`ZIR listing: ${problem(inspected, 'ziran inspect')}`);
+    return readText(listing);
+  };
+  const { mine, dependencies } = splitOwn(names, file, await ownModules(file), (name) => name);
+  const files = [];
+  for (const name of mine) files.push({ name, text: await inspect(name) });
+  for (const name of dependencies) {
+    files.push(dependencyFile(name, () => inspect(name).catch((error) => error.message),
+      (await fs.stat(path.join(directory, name))).size));
+  }
+  return view('zir', 'ZIR', files);
+}
+
+// The stages every target shares, built once for all enabled targets:
+// CONTEXT.stages is the chain they need, and each step runs only for a stage
+// in it. The stage that fails and those after it show its reason.
 async function buildPipeline(context) {
   const { file, output, hasMain, noMain } = context;
-  const views = [view('source', 'Source', [{ name: path.basename(file), text: await readText(file) }])];
+  const wanted = context.stages;
+  const views = [];
   const finish = (message, zx = null) => {
-    for (const [id, label] of PIPELINE_STAGES.slice(views.length - 1)) views.push(failedView(id, label, message));
+    for (const id of wanted.slice(views.length)) views.push(failedView(id, CHAIN.find(([item]) => item === id)[1], message));
     return { views, zx, message };
   };
+  const at = (name) => path.join(output, name);
+  let checked;
+  try {
+    await cleanDirectory(output, []);
+    checked = await checkedProgram(context, at('checked'));
+  } catch (error) {
+    views.push(await sourceView(context, []));
+    return finish(error.message);
+  }
+  views.push(await sourceView(context, checked.names));
+  try { views.push(await zirView(context, path.dirname(checked.input), checked.names)); }
+  catch (error) { return finish(error.message); }
+  if (!wanted.includes('lowered')) return { views, zx: null, message: '' };
   if (!hasMain) return finish(noMain);
   const { zi2zx } = await nativeTools(context.command, file, context.folders);
   if (!zi2zx) return finish(missingTools(['zi2zx']));
-  const at = (name) => path.join(output, name);
   try {
-    await cleanDirectory(output, []);
-    const { entry, input } = await checkedProgram(context, at('checked'));
-    const checked = ['--root', path.dirname(input), '--entry', entry];
+    const args = ['--root', path.dirname(checked.input), '--entry', checked.entry];
     const zx = at('final.zx');
-    await toolStep(zi2zx, 'zi2zx', 'lowered instruction listing', [...checked,
-      '--emit', 'lir', '-o', at('lowered.lir'), input], output);
+    await toolStep(zi2zx, 'zi2zx', 'lowered instruction listing', [...args,
+      '--emit', 'lir', '-o', at('lowered.lir'), checked.input], output);
     views.push(view('lowered', 'LIR', [{ name: 'lowered.lir', text: await readText(at('lowered.lir')) }]));
-    await toolStep(zi2zx, 'zi2zx', 'optimization counters', [...checked, '--opt',
-      '--emit', 'opt-report', '-o', at('optimization.json'), input], output);
-    await toolStep(zi2zx, 'zi2zx', 'linked ZX instructions', [...checked, '--emit', 'zx', '-o', zx, input], output);
+    await toolStep(zi2zx, 'zi2zx', 'optimization counters', [...args, '--opt',
+      '--emit', 'opt-report', '-o', at('optimization.json'), checked.input], output);
+    await toolStep(zi2zx, 'zi2zx', 'linked ZX instructions', [...args, '--emit', 'zx', '-o', zx, checked.input], output);
     await toolStep(zi2zx, 'zi2zx', 'verified ZX instruction listing',
       ['--emit', 'lir', '-o', at('optimized.lir'), zx], output);
     views.push(view('optimized', 'Optimized', [
@@ -670,10 +777,11 @@ async function buildPipeline(context) {
   }
 }
 
-// Each target's own copy of the shared stage views.
+// Each target's own copy of the shared stages it shows.
 async function pipelineViews(context) {
   const { views } = await context.pipeline();
-  return views.map((item) => ({ ...item, files: item.files.map((file) =>
+  const shown = stagesOf(context.target).map(([id]) => id);
+  return views.filter((item) => shown.includes(item.id)).map((item) => ({ ...item, files: item.files.map((file) =>
     file.binary ? { ...file, binary: { ...file.binary } } : { ...file }) }));
 }
 
@@ -711,7 +819,7 @@ async function buildNative(context) {
   return { ok: true, message: '', views };
 }
 
-// Any other target: the shared stages, then the generated source.
+// Any other source generator: the shared stages up to ZIR, then the generated source.
 async function buildSource(context, target) {
   const { command, file, output, paths, project, cwd } = context;
   const built = await runCommand(command, buildArgs(target, file, output, paths, project), cwd);
@@ -734,9 +842,11 @@ async function targetContext(command, file, output, paths, options = {}) {
     cwd: project || path.dirname(file), hasMain, noMain, folders: options.folders || [] };
 }
 
-// The shared stages for FILE, built once under DIRECTORY for every target.
+// The shared stages for FILE, built once under DIRECTORY for the TARGETS
+// that show them.
 async function startPipeline(command, file, directory, paths, options = {}) {
-  return buildPipeline(await targetContext(command, file, directory, paths, options));
+  const context = await targetContext(command, file, directory, paths, options);
+  return buildPipeline({ ...context, stages: chainFor(options.targets || []) });
 }
 
 // Build FILE for TARGET under WORKDIRECTORY and return its views: the shared
@@ -747,13 +857,20 @@ async function buildTarget(command, target, file, workDirectory, paths, options 
   const work = path.join(workDirectory, `${target}.inspect`);
   await cleanDirectory(output);
   await fs.mkdir(work, { recursive: true });
-  const context = { ...await targetContext(command, file, output, paths, options), work };
+  const context = { ...await targetContext(command, file, output, paths, options), work, target };
   let pipeline = options.pipeline;
   context.pipeline = () => (pipeline ||= startPipeline(command, file,
-    path.join(workDirectory, `${target}.pipeline`), paths, context));
+    path.join(workDirectory, `${target}.pipeline`), paths, { ...context, targets: [target] }));
   try {
     const builder = BUILDERS[target];
-    return { id: target, ...(builder ? await builder(context) : await buildSource(context, target)) };
+    const result = builder ? await builder(context) : await buildSource(context, target);
+    // The table, not the builder, decides the tabs and their order.
+    const order = stagesOf(target);
+    const views = order.map(([id, label]) => {
+      const found = result.views.find((item) => item.id === id);
+      return found && { ...found, label };
+    }).filter(Boolean);
+    return { id: target, ...result, views };
   } catch (error) {
     return { id: target, ok: false, message: error.message, views: [] };
   }
@@ -761,6 +878,6 @@ async function buildTarget(command, target, file, workDirectory, paths, options 
 
 module.exports = {
   DEFAULT_TARGETS, TARGETS, assemblyArguments, buildArgs, buildTarget, bundleArgs, cCompiler,
-  commandStd, enabledTargets, importedPackages, importingPrograms, irArgs, listFiles, mainLine,
+  chainFor, commandStd, enabledTargets, importedPackages, importingPrograms, irArgs, listFiles, mainLine,
   modulePaths, noMainMessage, ownModules, packageModulePaths, packageRoot, sourceArgs, splitOwn,
-  startPipeline, ziranCommand, ziranTool };
+  observeCommands, stagesOf, startPipeline, ziranCommand, ziranTool };

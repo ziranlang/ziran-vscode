@@ -83,7 +83,7 @@ test('preview keeps child environments, webviews and rebuild inputs safe', () =>
     assert.doesNotMatch(html, removed);
   assert.doesNotThrow(() => new vm.Script(html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]));
 });
-test('Open in window runs the program\'s C executable as one owned process', async () => {
+test('Open in window runs the program\'s ZX bundle natively as one owned process', async () => {
   const { Preview, projectEntry } = require('../preview.cjs');
   const directory = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-window-'));
   const preview = Object.create(Preview.prototype);
@@ -91,25 +91,30 @@ test('Open in window runs the program\'s C executable as one owned process', asy
     const source = path.join(directory, 'window.zi');
     await fs.writeFile(source, 'App :: #import "kryon/app";\nmain :: () -> s32 { return App.Run(App.Window.{}) }\n');
     const started = path.join(directory, 'started');
-    // A fake compiler whose "executable" records each start, then waits like a window.
+    // A fake compiler writes the bundle; the fake player beside it records each
+    // native start with its arguments, then waits like a window. Neither builds C.
     const command = path.join(directory, 'fake-ziran');
     await fs.writeFile(command, `#!/bin/sh
-while [ $# -gt 0 ]; do case "$1" in -o) shift; output=$1;; --target=c) c=1;; --exe) exe=1;; esac; shift; done
-[ "$c$exe" = 11 ] || exit 3
-printf '#!/bin/sh\\necho $$ >> ${started}\\nexec sleep 60\\n' > "$output/window"; chmod +x "$output/window"
+[ "$1" = bundle ] || exit 3
+while [ $# -gt 0 ]; do case "$1" in -o) shift; output=$1;; esac; shift; done
+echo zx > "$output"
+`, { mode: 0o755 });
+    await fs.writeFile(path.join(directory, 'zi2zx'), `#!/bin/sh
+echo "$$ $*" >> ${started}
+exec sleep 60
 `, { mode: 0o755 });
     const vscode = { Uri: { file: fsPath => ({ fsPath }) }, workspace: { workspaceFolders: [],
       getConfiguration: () => ({ get: (key, fallback) => key === 'command' ? command : fallback }) } };
     const posted = [];
     Object.assign(preview, { disposed: false, source, storage: path.join(directory, 'storage'), vscode,
       windowChild: null, windowQueue: Promise.resolve(), inspector: { message: async () => false, dispose() {} },
-      disposables: [], state: { program: true, windowStatus: '', windowOutput: '', windowBuilding: false },
+      disposables: [], watchers: [], state: { program: true, windowStatus: '', windowOutput: '', windowBuilding: false },
       post() { posted.push({ ...this.state }); } });
     const pids = async (count) => {
       for (let attempt = 0; attempt < 100; attempt++) {
         try {
           const lines = (await fs.readFile(started, 'utf8')).trim().split('\n');
-          if (lines.length >= count) return lines.map(Number);
+          if (lines.length >= count) return lines.map(line => Number(line.split(' ')[0]));
         } catch {}
         await new Promise(resolve => setTimeout(resolve, 50));
       }
@@ -121,6 +126,8 @@ printf '#!/bin/sh\\necho $$ >> ${started}\\nexec sleep 60\\n' > "$output/window"
     assert.ok(posted.some(state => state.windowBuilding && /Building/.test(state.windowStatus)));
     const [first] = await pids(1);
     assert.ok(alive(first));
+    const launch = (await fs.readFile(started, 'utf8')).split('\n')[0];
+    assert.match(launch, /^\d+ run --backend native .*window\.zx$/, 'native ZX player, not the C executable');
     // Opening again replaces the window rather than adding a second one.
     await preview.message({ type: 'openWindow' });
     const [, second] = await pids(2);
@@ -135,7 +142,7 @@ printf '#!/bin/sh\\necho $$ >> ${started}\\nexec sleep 60\\n' > "$output/window"
     Object.assign(preview, { disposed: false, windowChild: null });
     vscode.workspace.getConfiguration = () => ({ get: (key, fallback) => key === 'command' ? '/bin/false' : fallback });
     await preview.openWindow();
-    assert.equal(preview.state.windowStatus, 'C build failed');
+    assert.equal(preview.state.windowStatus, 'ZX build failed');
     assert.equal(preview.state.windowBuilding, false);
     // A project preview opened from its folder inspects the manifest's entry.
     await fs.writeFile(path.join(directory, 'ziran.toml'), '[package]\nname="w"\nentry="window.zi"\n');
@@ -173,4 +180,63 @@ test('preview assets refresh embedded files and reject paths outside the build',
       await assert.rejects(previewAssets(artifact), /inside the build directory/);
     }
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('a native run that cannot start shows the named gap and falls back to nothing', async () => {
+  const { Preview } = require('../preview.cjs');
+  const directory = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-gap-'));
+  const preview = Object.create(Preview.prototype);
+  try {
+    const source = path.join(directory, 'window.zi');
+    await fs.writeFile(source, 'main :: () -> s32 { return 0 }\n');
+    const command = path.join(directory, 'fake-ziran');
+    await fs.writeFile(command, '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && { shift; echo zx > "$1"; }; shift; done\n', { mode: 0o755 });
+    await fs.writeFile(path.join(directory, 'zi2zx'),
+      '#!/bin/sh\necho "ziran: assembly.gap.machine-host: machine ELF does not implement host capability OpenWindow; no alternate engine was selected" >&2\nexit 1\n', { mode: 0o755 });
+    const vscode = { Uri: { file: fsPath => ({ fsPath }) }, workspace: { workspaceFolders: [],
+      getConfiguration: () => ({ get: (key, fallback) => key === 'command' ? command : fallback }) } };
+    Object.assign(preview, { disposed: false, source, storage: path.join(directory, 'storage'), vscode,
+      windowChild: null, windowQueue: Promise.resolve(), disposables: [], watchers: [], inspector: { dispose() {} },
+      state: { program: true, windowStatus: '', windowOutput: '', windowBuilding: false }, post() {} });
+    await preview.openWindow();
+    for (let attempt = 0; attempt < 100 && preview.windowChild; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(preview.state.windowStatus, 'Native run failed (exit 1)');
+    assert.match(preview.state.windowOutput, /assembly\.gap\.machine-host.*OpenWindow/);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('the preview follows the active .zi file and keeps its window and tabs for the same project', () => {
+  const { Preview } = require('../preview.cjs');
+  const preview = Object.create(Preview.prototype);
+  const scheduled = [];
+  const titles = [];
+  Object.assign(preview, { disposed: false, source: '/p/a.zi', root: '/p', location: { key: '/p', root: '/p', source: '/p/a.zi', standalone: false },
+    storage: '/s', windowChild: null, watchers: [], watch() {}, schedule() { scheduled.push(this.source); },
+    panel: { set title(value) { titles.push(value); } }, state: { project: 'a', html: '<canvas>' } });
+  assert.equal(preview.follow({ key: '/p', root: '/p', source: '/p/b.zi', standalone: false }), true);
+  assert.deepEqual([preview.source, preview.state.project, scheduled, titles], ['/p/b.zi', 'b', ['/p/b.zi'], ['Preview: b']]);
+  assert.equal(preview.state.html, '<canvas>', 'the live window stays for the same project');
+  assert.equal(preview.follow({ key: '/p', root: '/p', source: '/p/b.zi', standalone: false }), false, 'same file: nothing to do');
+  assert.equal(preview.follow({ key: '/q', root: '/q', source: '/q/c.zi', standalone: false }), false, 'another project is not this preview');
+  // A standalone program moves the whole preview, window included.
+  const lone = Object.create(Preview.prototype);
+  Object.assign(lone, { disposed: false, source: '/x/a.zi', root: '/s/preview/old', location: { key: '/x/a.zi', source: '/x/a.zi', standalone: true },
+    storage: '/s', windowChild: null, watchers: [], watch() { this.watched = true; }, schedule() {},
+    panel: {}, state: { project: 'a', html: '<canvas>', windowStatus: 'Window open' } });
+  assert.equal(lone.follow({ key: '/y/w.zi', root: null, source: '/y/w.zi', standalone: true }), true);
+  assert.deepEqual([lone.source, lone.location.key, lone.state.html, lone.state.windowStatus, lone.watched],
+    ['/y/w.zi', '/y/w.zi', '', '', true]);
+});
+
+test('the live frame fills its page edge to edge over the editor theme', async () => {
+  const { previewAssets, FRAME_STYLE } = require('../preview-assets.cjs');
+  const directory = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-frame-'));
+  try {
+    const artifact = path.join(directory, 'app.html');
+    await fs.writeFile(artifact, '<html><head><style>body{background:#f8fafc}</style></head><body><div id=zx-controls></div></body></html>');
+    const html = await previewAssets(artifact);
+    assert.ok(html.includes(`<style>${FRAME_STYLE}</style></head>`), 'the frame style follows the page style');
+    assert.match(FRAME_STYLE, /body\{[^}]*margin:0[^}]*background:transparent!important/);
+    assert.match(FRAME_STYLE, /#zx-controls:empty\{display:none\}#zx-controls:empty\+#canvas-frame\{height:100%\}/);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });

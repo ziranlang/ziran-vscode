@@ -6,6 +6,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash, randomBytes } = require('node:crypto');
 const { binaryRegions } = require('./binary-layout.cjs');
+const { highlightedFile } = require('./highlight.cjs');
 const { TARGETS, buildTarget, enabledTargets, startPipeline } = require('./targets.cjs');
 
 // The most one hex view request reads from a binary.
@@ -31,13 +32,29 @@ function languageOf(name) {
   if (/\.(zir|zx)(\.txt)?$|\.lir$/.test(name)) return 'zir';
   if (/\.(cpp|hpp)$/.test(name)) return 'cpp';
   if (/\.wat$/.test(name)) return 'wat';
+  if (/\.(s|disasm|asm)$/.test(name)) return 'asm';
   if (/\.go$/.test(name)) return 'go';
   if (/\.rs$/.test(name)) return 'rust';
   if (/\.py$/.test(name)) return 'py';
   if (/\.(c|h)$/.test(name)) return 'c';
   return '';
 }
+// Assembly listings, Go's and objdump's: comments, labels, directives,
+// registers and numbers.
+function highlightAssembly(text) {
+  const token = /(#[^\n]*|\/\/[^\n]*|;[^\n]*)|(^[ \t]*\.[A-Za-z_.]+)|(^[ \t]*[0-9a-f]+ <[^>\n]+>:|<[^>\n]+>:?|^[A-Za-z_.$][^\s:]*:)|(%[a-z0-9]+\b|\b[xyzr]mm[0-9]+\b|\b[re]?[abcd]x\b|\b[re]?[sd]il?\b|\b[re]?[sb]pl?\b|\br[0-9]+[dwb]?\b)|(\$?-?\b0[xX][0-9a-fA-F]+\b|\$-?\d+\b|\b\d+\b)/gm;
+  let html = '';
+  let last = 0;
+  for (const match of text.matchAll(token)) {
+    html += escapeHtml(text.slice(last, match.index));
+    last = match.index + match[0].length;
+    const kind = match[1] ? 'comment' : match[2] ? 'directive' : match[3] ? 'function' : match[4] ? 'type' : 'number';
+    html += '<span class="tok-' + kind + '">' + escapeHtml(match[0]) + '</span>';
+  }
+  return html + escapeHtml(text.slice(last));
+}
 function highlight(text, language) {
+  if (language === 'asm') return highlightAssembly(text);
   if (!KEYWORDS[language]) return escapeHtml(text);
   const keywords = new Set(KEYWORDS[language].split(' '));
   // Python comments start with #, and its strings can be triple-quoted.
@@ -185,6 +202,7 @@ const inspector = (() => {
   const views = saved.views || {};
   // Dependency files arrive from the extension when first shown.
   const texts = new Map();
+  const htmls = new Map();
   let textGeneration = -1;
   let programOnly = saved.programOnly === true;
   const remember = () => api.setState({ ...(api.getState() || {}), selected, files, views, programOnly,
@@ -443,7 +461,9 @@ const inspector = (() => {
       }
       if (typeof text !== 'string') { code.textContent = 'Loading ' + chosen.name + '…'; return; }
     }
-    code.innerHTML = text.length > 400000 ? escapeHtml(text) : highlight(text, languageOf(chosen.name));
+    // Ziran source arrives colored by the extension's grammar.
+    const colored = chosen.html || (chosen.lazy && htmls.get(chosen.lazy));
+    code.innerHTML = colored || (text.length > 400000 ? escapeHtml(text) : highlight(text, languageOf(chosen.name)));
   }
   return {
     receive(data) {
@@ -454,6 +474,7 @@ const inspector = (() => {
       }
       if (data.type === 'text') {
         texts.set(data.key, data.text);
+        if (data.html) htmls.set(data.key, data.html);
         render();
         return true;
       }
@@ -461,7 +482,7 @@ const inspector = (() => {
     },
     render(data) {
       state = data;
-      if (state.generation !== textGeneration) { textGeneration = state.generation; texts.clear(); }
+      if (state.generation !== textGeneration) { textGeneration = state.generation; texts.clear(); htmls.clear(); }
       render();
     },
   };
@@ -507,7 +528,7 @@ class TargetInspector {
   lazyFile(id, view, file) {
     const { load, ...rest } = file;
     const key = `${this.generation}:${id}:${view}:${file.name}`;
-    this.texts.set(key, load);
+    this.texts.set(key, { load, name: file.name });
     return { ...rest, lazy: key };
   }
 
@@ -517,6 +538,9 @@ class TargetInspector {
       item.files = (item.files || []).map((file) => typeof file.load === 'function' ?
         this.lazyFile(result.id, item.id, file) : file);
       for (const file of item.files) {
+        // Ziran source is colored by the extension's grammar.
+        const html = await highlightedFile(file.name, file.text);
+        if (html) file.html = html;
         if (!file.binary?.path) continue;
         const key = `${this.generation}:${result.id}:${item.id}:${file.name}`;
         this.binaries.set(key, file.binary.path);
@@ -545,7 +569,7 @@ class TargetInspector {
     const work = path.join(this.workDirectory(file), 'targets');
     const options = { hasMain, noMain, folders };
     const pipeline = this.state.enabled.length ?
-      startPipeline(command, file, path.join(work, 'pipeline'), paths, options) : null;
+      startPipeline(command, file, path.join(work, 'pipeline'), paths, { ...options, targets: this.state.enabled }) : null;
     pipeline?.catch(() => {});
     await Promise.all(this.state.enabled.map((target, index) =>
       buildTarget(command, target, file, work, paths, { ...options, pipeline }).then(async (result) => {
@@ -597,12 +621,14 @@ class TargetInspector {
 
   // A dependency file's text, read or generated when the view first shows it.
   async sendText(message) {
-    const load = this.texts.get(message.key);
+    const entry = this.texts.get(message.key);
     let text = 'This file belongs to an earlier build; it returns when the current build finishes.';
-    if (load) {
-      try { text = await load(); } catch (error) { text = error.message; }
+    let html = null;
+    if (entry) {
+      try { text = await entry.load(); } catch (error) { text = error.message; }
+      html = await highlightedFile(entry.name, String(text));
     }
-    this.send({ type: 'text', key: message.key, text: String(text) });
+    this.send({ type: 'text', key: message.key, text: String(text), ...(html ? { html } : {}) });
   }
 
   dispose() {

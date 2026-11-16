@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { test } from 'node:test';
 const require = createRequire(import.meta.url);
 const { DEFAULT_TARGETS, TARGETS, assemblyArguments, buildArgs, buildTarget, commandStd, enabledTargets, importingPrograms,
-  noMainMessage, ownModules, splitOwn, ziranCommand } = require('../targets.cjs');
+  noMainMessage, observeCommands, ownModules, splitOwn, stagesOf, startPipeline, ziranCommand } = require('../targets.cjs');
 const compiler = path.resolve('../ziran/build/bin/ziran');
 const nativeTools = ['zi2zx', 'zx2native'].every(tool => existsSync(path.resolve('../ziran/build/bin', tool)));
 const view = (result, id) => {
@@ -72,11 +72,11 @@ cp "$source" "$output/hello.$target"; echo runtime > "$output/runtime.h"; echo s
 `, { mode: 0o755 });
     const work = path.join(directory, 'work');
     const built = await buildTarget(command, 'py', file, work, []);
-    // Every target shows the shared stages before its own output.
-    assert.deepEqual(built.views.map(item => [item.id, item.label]), [['source', 'Source'], ['lowered', 'LIR'],
-      ['optimized', 'Optimized'], ['zx', 'ZX'], ['generated', 'py']]);
+    // A source generator shows Source and ZIR, then its own output.
+    assert.deepEqual(built.views.map(item => [item.id, item.label]), [['source', 'Source'], ['zir', 'ZIR'],
+      ['generated', 'py']]);
     assert.equal(view(built, 'source').files[0].text, 'first\n');
-    assert.match(built.views.find(item => item.id === 'lowered').message, /^hello\.zi has no main/);
+    assert.match(built.views.find(item => item.id === 'zir').message, /^checked IR/);
     assert.deepEqual(view(built, 'generated').files.map(item => item.name), ['hello.py', 'runtime.h']);
     assert.equal(view(built, 'generated').files[0].text, 'first\n');
     assert.ok(built.views.every(item => !('caption' in item)));
@@ -105,12 +105,13 @@ test('real package builds expose each target, portable execution, IR and module 
       results[target] = await buildTarget(compiler, target, source, work, []);
       assert.equal(results[target].ok, true, `${target}: ${results[target].message}`);
     }
-    const pipeline = ['source', 'lowered', 'optimized', 'zx'];
-    assert.deepEqual(results.c.views.map(item => item.id), [...pipeline, 'generated', 'assembly', 'binary']);
-    assert.deepEqual(results.go.views.map(item => item.id), [...pipeline, 'generated', 'assembly', 'binary']);
-    assert.deepEqual(results.wasm.views.map(item => item.id), [...pipeline, 'text', 'binary']);
+    const pipeline = ['source', 'zir', 'lowered', 'optimized', 'zx'];
+    for (const target of ['c', 'go', 'wasm']) {
+      assert.deepEqual(results[target].views.map(item => item.id), stagesOf(target).map(([id]) => id), target);
+    }
+    assert.match(view(results.c, 'zir').files[0].text, /\nmodule hello from hello\.zi/);
     assert.match(view(results.c, 'source').files[0].text, /print\(Message\)/);
-    if (nativeTools) assert.match(view(results.c, 'lowered').files[0].text, /^lir \d+ entry/);
+    if (nativeTools) assert.match(view(results.wasm, 'lowered').files[0].text, /^lir \d+ entry/);
     assert.match(view(results.c, 'generated').files[0].text, /Package roots/);
     assert.match(view(results.c, 'assembly').files[0].text, /\.text|\.section/);
     assert.deepEqual(await magic(view(results.c, 'binary').files[0]), [0x7f, 0x45, 0x4c, 0x46]);
@@ -123,6 +124,7 @@ test('real package builds expose each target, portable execution, IR and module 
       const native = await buildTarget(compiler, 'native', source, work, []);
       assert.equal(native.ok, true, native.message);
       assert.deepEqual(native.views.map(item => item.id), [...pipeline, 'assembly', 'binary']);
+      assert.deepEqual(native.views.map(item => item.id), stagesOf('native').map(([id]) => id));
       assert.match(view(native, 'source').files[0].text, /print\(Message\)/);
       const binary = view(native, 'binary').files[0];
       assert.deepEqual(await magic(binary), [0x7f, 0x45, 0x4c, 0x46]);
@@ -163,8 +165,8 @@ test('real package builds expose each target, portable execution, IR and module 
       const result = await buildTarget(compiler, target, source, work, []);
       assert.match(view(result, 'source').files[0].text, /Frame/);
       assert.match(view(result, 'generated').files[0].text, /Frame/);
-      assert.equal(result.views.find(item => item.id === 'zx').message, expected);
       assert.equal(result.views.find(item => item.id === 'binary').message, expected);
+      assert.equal(result.views.some(item => ['lowered', 'optimized', 'zx'].includes(item.id)), false, target);
     }
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
@@ -248,8 +250,7 @@ test('a Kryon program gets the C, Go, Wasm and Native tabs with only its own cod
     assert.ok(assembly.filter(item => item.dependency).every(item => typeof item.load === 'function'));
     assert.match(view(results.wasm, 'text').files[0].text, /\(module/);
     for (const target of ['c', 'go', 'wasm', ...(nativeTools ? ['native'] : [])]) {
-      assert.deepEqual(results[target].views.slice(0, 4).map(item => item.label), ['Source', 'LIR', 'Optimized', 'ZX'], target);
-      assert.ok(!results[target].views.some(item => item.label === 'ZIR'), target);
+      assert.deepEqual(results[target].views.map(item => item.label), stagesOf(target).map(([, label]) => label), target);
     }
   } finally { await fs.rm(work, { recursive: true, force: true }); }
 });
@@ -261,7 +262,7 @@ test('hello\'s Assembly lists the whole ELF and Binary marks its regions, each w
   try {
     const native = await buildTarget(compiler, 'native', hello, work, []);
     assert.equal(native.ok, true, native.message);
-    assert.deepEqual(native.views.map(item => item.label), ['Source', 'LIR', 'Optimized', 'ZX', 'Assembly', 'Binary']);
+    assert.deepEqual(native.views.map(item => item.label), ['Source', 'ZIR', 'LIR', 'Optimized', 'ZX', 'Assembly', 'Binary']);
     const listing = view(native, 'assembly').files[0];
     const { text, filtered } = listing;
     assert.equal(listing.filterLabel, 'Hide ELF parts');
@@ -288,3 +289,71 @@ test('hello\'s Assembly lists the whole ELF and Binary marks its regions, each w
       assert.equal(binary.regions[index].start, binary.regions[index - 1].end, 'regions cover the file in order');
   } finally { await fs.rm(work, { recursive: true, force: true }); }
 });
+
+test('one stage table gives every target its tabs: a prefix of the shared chain, then its own output', () => {
+  const labels = target => stagesOf(target).map(([, label]) => label);
+  assert.deepEqual(labels('c'), ['Source', 'ZIR', 'C', 'Assembly', 'Binary']);
+  assert.deepEqual(labels('go'), ['Source', 'ZIR', 'Go', 'Assembly', 'Binary']);
+  assert.deepEqual(labels('wasm'), ['Source', 'ZIR', 'LIR', 'Optimized', 'ZX', 'WAT', 'Binary']);
+  assert.deepEqual(labels('native'), ['Source', 'ZIR', 'LIR', 'Optimized', 'ZX', 'Assembly', 'Binary']);
+  const chain = ['source', 'zir', 'lowered', 'optimized', 'zx'];
+  for (const { id } of TARGETS) {
+    const shared = stagesOf(id).map(([stage]) => stage).filter(stage => chain.includes(stage));
+    assert.deepEqual(shared, chain.slice(0, shared.length), `${id} skips or reorders no stage`);
+  }
+});
+
+// Each target's tabs, checked against the commands its build ran.
+const kryonHello = path.resolve('../../kryonlabs/kryon/examples/hello.zi');
+for (const program of [kryonHello, kryonWindow]) {
+  test(`${path.basename(program)}: every target shows its table's stages, built from the commands it ran`,
+    { skip: !existsSync(program) || !existsSync(path.join(os.homedir(), '.local/bin/ziran')) }, async () => {
+    const vscode = { Uri: { file: fsPath => ({ fsPath }) }, workspace: {
+      workspaceFolders: [], getConfiguration: () => ({ get: (_, fallback) => fallback }) } };
+    const command = await ziranCommand(program, vscode);
+    const work = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-stages-'));
+    const options = { folders: [path.resolve('..')] };
+    try {
+      // C and Go compile the checked ZIR: a run that enables only them runs no ZX step.
+      const commands = [];
+      observeCommands((tool) => commands.push(tool));
+      const small = startPipeline(command, program, path.join(work, 'small'), [], { ...options, targets: ['c', 'go'] });
+      for (const target of ['c', 'go']) {
+        const result = await buildTarget(command, target, program, path.join(work, target), [], { ...options, pipeline: small });
+        assert.equal(result.ok, true, `${target}: ${result.message}`);
+        assert.deepEqual(result.views.map(item => [item.id, item.label]), stagesOf(target), target);
+      }
+      observeCommands(null);
+      assert.ok(commands.includes('ziran') && commands.includes('zi-inspect'), 'ZIR is checked and listed');
+      assert.equal(commands.includes('zi2zx') || commands.includes('zx2native'), false, 'C and Go run no ZX step');
+      // Every target at once shares one pipeline, built once.
+      const pipeline = startPipeline(command, program, path.join(work, 'shared'), [],
+        { ...options, targets: TARGETS.map(item => item.id) });
+      const results = {};
+      for (const target of ['c', 'go', 'wasm', 'native']) {
+        results[target] = await buildTarget(command, target, program, path.join(work, `all-${target}`), [], { ...options, pipeline });
+        assert.equal(results[target].ok, true, `${target}: ${results[target].message}`);
+        assert.deepEqual(results[target].views.map(item => [item.id, item.label]), stagesOf(target), target);
+      }
+      // The same source gives the same stage content on every target.
+      const text = async (result, id) => Promise.all(result.views.find(item => item.id === id).files.map(async file =>
+        [file.name, file.text ?? (file.load ? await file.load() : (await fs.readFile(file.binary.path)).toString('base64'))]));
+      for (const id of ['source', 'zir']) {
+        const expected = JSON.stringify((await text(results.c, id)).slice(0, 3));
+        for (const target of ['go', 'wasm', 'native']) assert.equal(JSON.stringify((await text(results[target], id)).slice(0, 3)), expected, `${target} ${id}`);
+      }
+      for (const id of ['lowered', 'optimized', 'zx']) {
+        assert.equal(JSON.stringify(await text(results.wasm, id)), JSON.stringify(await text(results.native, id)), id);
+      }
+      // Source and ZIR list the program's own modules first; dependencies wait to be picked.
+      for (const id of ['source', 'zir']) {
+        const files = results.c.views.find(item => item.id === id).files;
+        assert.equal(files[0].dependency, undefined, `${id} starts with the program`);
+        const dependencies = files.filter(item => item.dependency);
+        assert.ok(dependencies.length > 0, `${id} lists dependencies for the file dropdown`);
+        assert.ok(dependencies.every(item => item.text === undefined && typeof item.load === 'function'));
+      }
+      assert.match(await results.c.views.find(item => item.id === 'source').files.find(item => item.dependency).load(), /\S/);
+    } finally { observeCommands(null); await fs.rm(work, { recursive: true, force: true }); }
+  });
+}

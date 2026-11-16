@@ -32,6 +32,15 @@ async function previewAssets(artifact) {
     const escaped = script.replace(new RegExp('</script','gi'), '<'+String.fromCharCode(92)+'/script');
     html = html.replace(match[0], () => '<script>' + escaped + '</script>');
   }
-  return html;
+  return html.replace(/<\/head>/i, () => '<style>' + FRAME_STYLE + '</style></head>');
 }
-module.exports = {previewAssets};
+
+// The page fills its frame edge to edge and lets the editor's theme show
+// through wherever the app draws nothing. Kryon's empty controls strip is
+// hidden and its canvas takes the room it held; a page that fills the strip
+// keeps it.
+const FRAME_STYLE = 'html,body{margin:0;padding:0;overflow:hidden;background:transparent!important}' +
+  '#zx-controls:empty{display:none}#zx-controls:empty+#canvas-frame{height:100%}' +
+  'canvas{margin:0;padding:0;border:0}';
+
+module.exports = {previewAssets, FRAME_STYLE};

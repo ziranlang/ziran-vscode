@@ -73,7 +73,7 @@ try {
     const native = run.locator('#tabs').getByRole('tab', { name: 'Native', exact: true });
     await native.click({ timeout: 180000 });
     assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(),
-      ['Source', 'LIR', 'Optimized', 'ZX', 'Assembly', 'Binary']);
+      ['Source', 'ZIR', 'LIR', 'Optimized', 'ZX', 'Assembly', 'Binary']);
     const view = name => run.locator('#views').getByRole('tab', { name, exact: true });
     await view('LIR').click();
     assert.match(await run.locator('#code').textContent(), /^lir \d+ entry/);
@@ -93,7 +93,7 @@ try {
     await run.waitForFunction(() => /^── hello:main · 0x/.test(document.querySelector('#hex-rows').textContent));
     assert.equal(await fs.readFile(path.join(runtime, 'activated'), 'utf8'), installed || repo);
     await fs.writeFile(path.join(runtime, 'done'), '');
-    console.log(`Local installed VS Code Native test: ${entry}; Source, LIR, Optimized, ZX, full and program-only Assembly and Binary views passed.`);
+    console.log(`Local installed VS Code Native test: ${entry}; Source, ZIR, LIR, Optimized, ZX, full and program-only Assembly and Binary views passed.`);
   } else if (real) {
     await run.waitForFunction(() => document.querySelector('[role=tab]'), null, {timeout:180000});
     for (const tab of ['C', 'Go']) {
@@ -128,20 +128,21 @@ try {
     const secondRow = async (pattern) => run.waitForFunction((source) =>
       new RegExp(source).test(document.querySelector('#hex-rows').textContent.split('\n')[1] || ''),
       pattern.source, { timeout: 60000 });
-    const pipeline = ['Source', 'LIR', 'Optimized', 'ZX'];
+    // One chain for every target: C and Go stop after ZIR; Wasm and Native go through ZX.
+    const zirChain = ['Source', 'ZIR'];
+    const pipeline = [...zirChain, 'LIR', 'Optimized', 'ZX'];
     await run.waitForFunction(() => document.querySelector('#screen').textContent === 'Hello, World!\n');
     await tab('Native').waitFor({ timeout: 180000 });
     await run.waitForFunction(() => !document.querySelector('#status').textContent.includes('…'), null, { timeout: 180000 });
-    // No ZIR tab: every target shows the shared stages, then its own output.
     assert.deepEqual(await run.locator('#tabs').getByRole('tab').allTextContents(), ['C', 'Go', 'Wasm', 'Native']);
     assert.deepEqual(await run.locator('#targets input').count(), 4);
     assert.equal(await run.locator('#caption').count(), 0);
 
     await tab('C').click();
-    assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(), [...pipeline, 'C', 'Assembly', 'Binary']);
+    assert.deepEqual(await run.locator('#views').getByRole('tab').allTextContents(), [...zirChain, 'C', 'Assembly', 'Binary']);
     assert.match(await code(), /Hello, World!/);
-    await view('LIR').click();
-    assert.match(await code(), /^lir \d+ entry/);
+    await view('ZIR').click();
+    assert.match(await code(), /module hello from hello\.zi/);
     await view('C').click();
     assert.match(await code(), /Hello, World!/);
     await view('Assembly').click();
@@ -237,7 +238,7 @@ try {
 
     assert.equal(await fs.readFile(path.join(runtime, 'activated'), 'utf8'), installed || repo);
     await fs.writeFile(path.join(runtime, 'done'), '');
-    console.log('Local VS Code test: hello-world execution; C, Go, Wasm and Native tabs each with Source, LIR, Optimized and ZX; full and program-only Assembly and Binary; legacy ZX setting migration; paged hex scrolling; save/rebuild; no-main module message passed.');
+    console.log('Local VS Code test: hello-world execution; C, Go, Wasm and Native tabs each with Source and ZIR (plus LIR, Optimized and ZX for Wasm and Native); full and program-only Assembly and Binary; legacy ZX setting migration; paged hex scrolling; save/rebuild; no-main module message passed.');
   }
 } finally {
   await browser?.close().catch(() => {});
