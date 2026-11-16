@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Open in window** on the Wasm platform runs the program's ZX in the page, in the frame the web preview uses, instead of in Node, which has no host for its capabilities: a canvas profile with `codegen = "zx"` (`wasm`, which a single-file preview's own project now has) builds Kryon's canvas player around the bundle, which lowers it to Wasm in the page and runs `main` with the page's canvas as its window. A project with no such profile names that.
 - **Open in window** runs the build the Binary tab shows on every platform: on Linux x86-64, the native executable itself, which links a Kryon program's window from Kryon's registered desktop host library, instead of `zi2zx run`, which never found the registered host and stopped at "missing host capability". Native's Assembly and Binary for `examples/window.zi` show that executable instead of the machine-host gap, and a capability no registered library provides still shows its named gap.
 - Leave a viewport of room under the Targets views, so switching to a tab or view with a shorter block keeps the page where it was instead of pulling it up.
 - Add a **Platform** dropdown beside the target checkboxes, listing what the toolchain can build: every `ziran capabilities` row checked against `zx2native`'s usage and a probe of each, plus Wasm from `zx2wasm`. A refused row is disabled and shows its gap by name; Windows x86-64 lights up when `zx2native --platform windows` lands. The choice is saved to `ziran.previewPlatform`.

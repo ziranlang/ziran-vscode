@@ -189,6 +189,36 @@ try {
     await preview.locator('#views').getByRole('tab', { name: 'Assembly', exact: true }).click();
     await preview.waitForFunction(() => /<window:main>:/.test(document.querySelector('#code').textContent), null, { timeout: 60000 });
     assert.doesNotMatch(await preview.locator('#code').textContent(), /assembly\.gap/);
+    // On the Wasm platform Native ends in WAT and Binary, and Open in window
+    // runs the program's ZX in the page: Kryon's canvas player lowers it to
+    // Wasm there, and its main clears the page's canvas as its window.
+    await preview.locator('#platform').selectOption('wasm32');
+    await preview.waitForFunction(() => [...document.querySelectorAll('#views [role=tab]')].some(tab => tab.textContent === 'WAT'),
+      null, { timeout: 600000 });
+    await preview.locator('#views').getByRole('tab', { name: 'WAT', exact: true }).click();
+    await preview.waitForFunction(() => /\(module/.test(document.querySelector('#code').textContent), null, { timeout: 60000 });
+    await dismiss();
+    await preview.locator('#open-window').click();
+    await preview.waitForFunction(() => /^(Window open · Wasm|No Wasm page|Wasm page build failed)/.test(document.querySelector('#window-status').textContent),
+      null, { timeout: 600000 });
+    assert.equal(await preview.locator('#window-status').textContent(), 'Window open · Wasm',
+      await preview.locator('#build-output').textContent());
+    const page = preview.locator('#app').contentFrame();
+    await page.locator('canvas').first().waitFor({ timeout: 180000 });
+    let filled = {};
+    for (let attempt = 0; attempt < 600 && !(filled.width > 0 && filled.same === filled.width * filled.height); attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      filled = await page.locator('canvas').first().evaluate(canvas => {
+        const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+        let same = 0;
+        for (let index = 0; index < data.length; index += 4) {
+          if (data[index] === 248 && data[index + 1] === 250 && data[index + 2] === 252 && data[index + 3] === 255) same += 1;
+        }
+        return { width: canvas.width, height: canvas.height, same };
+      });
+    }
+    assert.ok(filled.width > 0 && filled.same === filled.width * filled.height, JSON.stringify(filled));
+    console.log('Open in window on Wasm ran window.zi\'s ZX in the page, its canvas in the frame colour:', JSON.stringify(filled));
     console.log('Under the window: C, Go, Wasm and Native with Source and ZIR (and LIR, Optimized, ZX for Wasm and Native), window.c first, Kryon modules under Dependencies and Native\'s Assembly of the linked executable.');
   } else {
     await app.locator('canvas').waitFor();

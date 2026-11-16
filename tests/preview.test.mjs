@@ -190,6 +190,43 @@ test('preview assets refresh embedded files and reject paths outside the build',
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+test('Open in window on Wasm runs the program\'s ZX in the page through its zx canvas profile', async () => {
+  const { Preview } = require('../preview.cjs');
+  const directory = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-page-'));
+  const preview = Object.create(Preview.prototype);
+  try {
+    const source = path.join(directory, 'window.zi');
+    await fs.writeFile(source, 'App :: #import "kryon/app";\nmain :: () -> s32 { return App.Show(App.Window.{}) }\n');
+    await fs.writeFile(path.join(directory, 'ziran.toml'), '[package]\nname = "window"\nentry = "window.zi"\n' +
+      '[tool.kryon.profiles.preview]\nbackend = "canvas"\n[tool.kryon.profiles.wasm]\nbackend = "canvas"\ncodegen = "zx"\n');
+    // A fake kryon builds the profile it is asked for into the page.
+    const built = path.join(directory, 'built');
+    const kryon = path.join(directory, 'kryon');
+    await fs.writeFile(kryon, `#!/bin/sh
+echo "$*" >> ${built}
+mkdir -p build && printf '<canvas id=canvas></canvas><p>%s</p>' "$3" > "build/window-$3.html"
+`, { mode: 0o755 });
+    const wasm = { id: 'wasm32', label: 'Wasm', arch: 'wasm32', os: 'wasm', format: 'wasm', emit: 'wasm', gap: '' };
+    const vscode = { Uri: { file: fsPath => ({ fsPath }) }, workspace: { workspaceFolders: [],
+      getConfiguration: () => ({ get: (key, fallback) => key === 'kryonCommand' ? kryon : fallback }) } };
+    Object.assign(preview, { disposed: false, source, root: directory, location: { standalone: false },
+      storage: path.join(directory, 'storage'), vscode, windowChild: null, windowQueue: Promise.resolve(),
+      disposables: [], watchers: [], inspector: { dispose() {}, message: async () => false,
+        choosePlatform: async () => ({ platform: wasm, tools: {} }) },
+      state: { program: true, html: '', windowStatus: '', windowOutput: '', windowBuilding: false }, post() {} });
+    await preview.openWindow();
+    assert.equal(preview.state.windowStatus, 'Window open · Wasm', preview.state.windowOutput);
+    assert.equal(await fs.readFile(built, 'utf8'), 'build --profile wasm\n');
+    assert.match(preview.state.html, /<canvas id=canvas><\/canvas><p>wasm<\/p>/);
+    assert.equal(preview.windowChild, null, 'no process: the page is the window');
+    // A project with no zx canvas profile names what its page needs.
+    await fs.writeFile(path.join(directory, 'ziran.toml'), '[package]\nname = "window"\n[tool.kryon.profiles.preview]\nbackend = "canvas"\n');
+    await preview.openWindow();
+    assert.equal(preview.state.windowStatus, 'No Wasm page');
+    assert.match(preview.state.windowOutput, /codegen = "zx"/);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
 test('a native build that cannot link a capability shows the named gap and falls back to nothing', async () => {
   const { Preview } = require('../preview.cjs');
   const directory = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-gap-'));

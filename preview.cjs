@@ -123,7 +123,9 @@ async function prepareStandalonePreview(file, storage, vscode) {
     `[toolchain]\ngit = "https://github.com/ziranlang/ziran.git"\nref = "master"\n\n` +
     `[dependencies.kryon]\ngit = "https://github.com/kryonlabs/kryon.git"\nref = "master"\n\n` +
     `[tool.kryon]\ndefault_profile = "preview"\nentry = "src/${entry}"\n\n` +
-    `[tool.kryon.profiles.preview]\nbackend = "canvas"\n`;
+    `[tool.kryon.profiles.preview]\nbackend = "canvas"\n\n` +
+    // The Wasm platform's page: Kryon's canvas player runs the program's ZX.
+    `[tool.kryon.profiles.wasm]\nbackend = "canvas"\ncodegen = "zx"\n`;
   const local = `[overrides]\nkryon = ${JSON.stringify(kryon)}\nziran = ${JSON.stringify(ziran)}\n`;
   await writeChanged(path.join(root, 'ziran.toml'), manifest);
   await writeChanged(path.join(root, 'ziran.local.toml'), local);
@@ -182,6 +184,22 @@ async function previewBuild(root, requested = '') {
   if (!/^[\w-]+$/.test(profile)) throw new Error('Invalid preview profile name');
   const name = config.package?.name || config.project?.name || path.basename(root);
   if (!/^[\w-]+$/.test(name)) throw new Error('Invalid project name');
+  return { profile, artifact: path.join(await projectBuildDirectory(root), `${name}-${profile}.html`) };
+}
+
+// The page that runs a program's ZX on the Wasm platform: a canvas profile
+// whose codegen is zx, `wasm` first, in which Kryon's canvas player lowers
+// the bundle to Wasm and runs it. { profile, artifact } or { missing }.
+async function zxPageBuild(root) {
+  let config;
+  try { config = parse(await fs.readFile(path.join(root, 'ziran.toml'), 'utf8')); }
+  catch { return { missing: 'The Wasm page needs a ziran.toml project.' }; }
+  const profiles = config.tool?.kryon?.profiles || {};
+  const page = (name) => profiles[name]?.backend === 'canvas' && profiles[name]?.codegen === 'zx';
+  const profile = ['wasm', ...Object.keys(profiles)].find(page);
+  if (!profile) return { missing: 'This project has no canvas profile with codegen = "zx", the page its ZX runs in.' };
+  const name = config.package?.name || path.basename(root);
+  if (!/^[\w-]+$/.test(profile) || !/^[\w-]+$/.test(name)) return { missing: 'Invalid page profile or project name.' };
   return { profile, artifact: path.join(await projectBuildDirectory(root), `${name}-${profile}.html`) };
 }
 
@@ -395,21 +413,32 @@ class Preview {
     await this.inspector.message(message);
   }
 
-  // The program on the selected platform, as one owned process with its own
-  // window; opening it again replaces the previous one. Every platform runs
-  // the build its Binary tab shows, its own way: on Linux x86-64 the
+  // The program on the selected platform, with its own window; opening it
+  // again replaces the previous one. A machine platform runs the build its
+  // Binary tab shows as one owned process, its own way: on Linux x86-64 the
   // executable itself, which links its host capabilities, such as Kryon's
   // window, from the registered host libraries; elsewhere under Wine or on a
-  // device. There is no C, engine or platform fallback: what cannot build or
-  // run shows its named gap.
+  // device. The Wasm platform runs the program's ZX in the page, where Kryon's
+  // canvas player lowers it to Wasm. There is no C, engine or platform
+  // fallback: what cannot build or run shows its named gap.
   async openWindow() {
     if (this.disposed || !this.state.program) return;
     await stopOwnedProcess(this.windowChild);
     this.windowChild = null;
     Object.assign(this.state, { windowStatus: 'Building the window…', windowOutput: '', windowBuilding: true });
     this.post();
+    const failed = (windowStatus, windowOutput) => {
+      Object.assign(this.state, { windowBuilding: false, windowStatus, windowOutput });
+      this.post();
+    };
     const { bundleArgs, modulePaths, packageRoot, ziranCommand } = require('./targets.cjs');
     const command = await ziranCommand(this.source, this.vscode);
+    const folders = (this.vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath);
+    const { platformArtifact, runRoute } = require('./platforms.cjs');
+    const { platform, tools } = await this.inspector.choosePlatform({ command, folders });
+    if (this.disposed) return;
+    if (!platform) return failed('No platform to run on', 'The toolchain lists no platforms.');
+    if (platform.format === 'wasm' && !platform.gap) return this.openPage(platform, failed);
     const paths = await modulePaths(this.source, command, this.vscode);
     const project = await packageRoot(this.source);
     const cwd = project || path.dirname(this.source);
@@ -420,18 +449,9 @@ class Preview {
     const bundle = path.join(output, `${path.basename(this.source, '.zi')}.zx`);
     const built = await runCommand(command, bundleArgs(this.source, paths, bundle, Boolean(project)), cwd);
     if (this.disposed) return;
-    const failed = (windowStatus, windowOutput) => {
-      Object.assign(this.state, { windowBuilding: false, windowStatus, windowOutput });
-      this.post();
-    };
     if (built.code !== 0 || !(await exists(bundle))) {
       return failed(built.code === 0 ? 'The ZX build wrote no bundle' : 'ZX build failed', (built.stderr || built.stdout).trim());
     }
-    const folders = (this.vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath);
-    const { platformArtifact, runRoute } = require('./platforms.cjs');
-    const { platform, tools } = await this.inspector.choosePlatform({ command, folders });
-    if (this.disposed) return;
-    if (!platform) return failed('No platform to run on', 'The toolchain lists no platforms.');
     const artifact = await platformArtifact(platform, bundle, output, path.basename(this.source, '.zi'), tools);
     if (this.disposed) return;
     if (artifact.problem) return failed(`No ${platform.label} build`, artifact.problem);
@@ -462,6 +482,33 @@ class Preview {
     });
     Object.assign(this.state, { windowStatus: `Window open · ${platform.label}`, windowBuilding: false });
     this.post();
+  }
+
+  // The Wasm platform's window: the program's ZX in the page, in the same
+  // frame the web preview shows, with the page's canvas as its window.
+  // Kryon's canvas player lowers the bundle to Wasm there and runs its main.
+  async openPage(platform, failed) {
+    let root = this.root;
+    try {
+      if (this.location.standalone) root = await prepareStandalonePreview(this.source, this.storage, this.vscode);
+    } catch (error) { return failed(`No ${platform.label} page`, error.message); }
+    if (this.disposed) return;
+    const page = await zxPageBuild(root);
+    if (page.missing) return failed(`No ${platform.label} page`, page.missing);
+    const built = await runCommand(await this.kryonCommand(), ['build', '--profile', page.profile], root);
+    if (this.disposed) return;
+    if (built.code !== 0) return failed(`${platform.label} page build failed`, (built.stdout + built.stderr).trim());
+    this.state.html = await require('./preview-assets.cjs').previewAssets(page.artifact);
+    Object.assign(this.state, { windowStatus: `Window open · ${platform.label}`, windowOutput: '', windowBuilding: false });
+    this.post();
+  }
+
+  async kryonCommand() {
+    const configured = this.vscode.workspace.getConfiguration('ziran', this.vscode.Uri.file(this.source || this.root))
+      .get('kryonCommand', '');
+    if (configured) return configured;
+    const local = path.join(os.homedir(), '.local', 'bin', 'kryon');
+    return await exists(local) ? local : 'kryon';
   }
 
   // The target views under the live window, for the previewed source or the
@@ -506,9 +553,7 @@ class Preview {
       }
       const configured = this.vscode.workspace.getConfiguration('ziran',
         this.vscode.Uri.file(this.source || this.root));
-      let command = configured.get('kryonCommand', '');
-      const local = path.join(os.homedir(), '.local', 'bin', 'kryon');
-      if (!command) command = await exists(local) ? local : 'kryon';
+      const command = await this.kryonCommand();
       const build = await previewBuild(this.root, configured.get('previewProfile', ''));
       const result = await runCommand(command, ['build', '--profile', build.profile], this.root);
       if (this.disposed) return;
@@ -610,4 +655,4 @@ function activatePreview(context, vscode) {
 
 module.exports = { activatePreview, manifestPath, previewHtml, projectEntry,
   isKryonProgram, prepareStandalonePreview, previewLocation, projectRoot, runCommand,
-  safeEnvironment, previewBuild, previewInput, Preview, stopOwnedProcess };
+  safeEnvironment, previewBuild, previewInput, Preview, stopOwnedProcess, zxPageBuild };

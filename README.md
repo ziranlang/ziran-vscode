@@ -175,10 +175,14 @@ lowers it for the selected platform as the **Binary** tab does and runs that,
 in one process; opening it again replaces that process, and closing the
 preview ends it. On Linux x86-64 the executable links its host capabilities,
 such as Kryon's window, from the host libraries registered beside the ZX
-players (`make install-user` in Kryon registers its desktop library). There is
-no fallback to C, a player or the portable engine: a capability no registered
-library provides, or a program that cannot run, shows the tool's named gap in
-the pane. The preview follows the active `.zi`
+players (`make install-user` in Kryon registers its desktop library). On the
+Wasm platform it runs the program's ZX in the page instead, in the frame the
+web preview uses: a canvas profile with `codegen = "zx"` (`wasm` in a
+single-file preview's own project) builds Kryon's canvas player around the
+bundle, which lowers it to Wasm in the page and runs its `main` with the
+page's canvas as its window. There is no fallback to C, a player or the
+portable engine: a capability no registered library provides, or a program
+that cannot run, shows the tool's named gap in the pane. The preview follows the active `.zi`
 editor, and its live frame has no padding and a transparent page over the
 editor's background.
 
