@@ -3,6 +3,7 @@ import { chromium } from 'playwright-core';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { editor } from './editor.mjs';
 import assert from 'node:assert/strict';
 const repo = path.resolve(import.meta.dirname, '..');
 const runtime = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-electron-'));
@@ -30,7 +31,7 @@ try {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   await new Promise(resolve => server.close(resolve));
-  child = spawn('/usr/share/code/code', ['--no-sandbox', '--disable-gpu', '--disable-workspace-trust', '--skip-welcome', '--skip-release-notes', '--user-data-dir', path.join(runtime,'profile'), '--extensions-dir', installed ? path.dirname(installed) : path.join(runtime,'extensions'), `--extensionDevelopmentPath=${installed || repo}`, `--extensionTestsPath=${path.join(repo,'tests/extension-host.cjs')}`, `--remote-debugging-port=${port}`, project], {env:{...process.env, ZIRAN_PREVIEW_PROJECT:project, ZIRAN_PREVIEW_RUNTIME:runtime, HARMONY_DESKTOP_RECOVERY:'0'}, stdio:['ignore','ignore','pipe']});
+  child = spawn(editor, ['--no-sandbox', '--disable-gpu', '--disable-workspace-trust', '--skip-welcome', '--skip-release-notes', '--user-data-dir', path.join(runtime,'profile'), '--extensions-dir', installed ? path.dirname(installed) : path.join(runtime,'extensions'), `--extensionDevelopmentPath=${installed || repo}`, `--extensionTestsPath=${path.join(repo,'tests/extension-host.cjs')}`, `--remote-debugging-port=${port}`, project], {env:{...process.env, ZIRAN_PREVIEW_PROJECT:project, ZIRAN_PREVIEW_RUNTIME:runtime, HARMONY_DESKTOP_RECOVERY:'0'}, stdio:['ignore','ignore','pipe']});
   let errors = '';
   child.stderr.on('data', chunk => {errors = (errors + chunk).slice(-4000);});
   for(let attempt=0; attempt<600; attempt++) {

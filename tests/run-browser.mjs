@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
+import { editor } from './editor.mjs';
 import assert from 'node:assert/strict';
 
 const repo = path.resolve(import.meta.dirname, '..');
@@ -39,7 +40,7 @@ try {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   await new Promise(resolve => server.close(resolve));
-  child = spawn('/usr/share/code/code', ['--no-sandbox', '--disable-gpu',
+  child = spawn(editor, ['--no-sandbox', '--disable-gpu',
     '--disable-workspace-trust', '--disable-extensions', '--skip-welcome', '--skip-release-notes',
     '--user-data-dir', path.join(runtime, 'profile'), '--extensions-dir',
     installed ? path.dirname(installed) : path.join(runtime, 'extensions'),
