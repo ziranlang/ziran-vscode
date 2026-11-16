@@ -9,6 +9,8 @@ const repo = path.resolve(import.meta.dirname, '..');
 const runtime = await fs.mkdtemp(path.join(import.meta.dirname, '.runtime-electron-'));
 let fixture;
 let project;
+let folderSettings;
+let savedSettings = null;
 const real = Boolean(process.env.ZIRAN_PREVIEW_FIXTURE || process.env.ZIRAN_PREVIEW_PROJECT);
 const windowExample = process.env.ZIRAN_PREVIEW_WINDOW === '1';
 let browser;
@@ -18,6 +20,10 @@ const installed = process.env.ZIRAN_INSTALLED_EXTENSION;
 try {
   fixture = process.env.ZIRAN_PREVIEW_FIXTURE ? await (await import('./preview-fixture.cjs')).default.createFixture(runtime, repo) : null;
   project = fixture?.project || process.env.ZIRAN_PREVIEW_PROJECT || path.join(runtime, 'button');
+  // Picking a platform saves it in the folder's settings; a real project gets
+  // its own back afterwards.
+  folderSettings = path.join(project, '.vscode/settings.json');
+  savedSettings = await fs.readFile(folderSettings, 'utf8').catch(() => null);
   if (!real) {
     await fs.mkdir(project);
     await fs.writeFile(path.join(project, 'ziran.toml'), '[package]\nname="button"\nentry="button.zi"\ntool="kryon"\n[tool.kryon.profiles.portable_web]\nbackend="canvas"\n');
@@ -283,6 +289,13 @@ try {
     if (alive) { try { process.kill(Number(windowProcess), 'SIGKILL'); } catch {} }
     assert.equal(alive, false, 'the owned window process must not outlive VS Code');
     console.log('The owned window process ended with VS Code.');
+  }
+  if (real && folderSettings) {
+    if (savedSettings !== null) await fs.writeFile(folderSettings, savedSettings);
+    else {
+      await fs.rm(folderSettings, { force: true });
+      await fs.rmdir(path.dirname(folderSettings)).catch(() => {});
+    }
   }
   await fs.rm(runtime,{recursive:true,force:true});
 }
