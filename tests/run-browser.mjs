@@ -29,7 +29,7 @@ try {
     await fs.mkdir(path.join(project, '.vscode'), { recursive: true });
     await fs.writeFile(path.join(project, 'hello.zi'), 'main :: () { print("Hello, World!\\n"); }\n');
     // A module without main, and the program that imports it.
-    await fs.writeFile(path.join(project, 'frame.zi'), '#program_export\nFrame :: () -> s32 { return 7 }\n');
+    await fs.writeFile(path.join(project, 'frame.zi'), 'Frame :: () -> s32 { return 7 }\n');
     await fs.writeFile(path.join(project, 'desktop_frame.zi'), '#import "frame"\nmain :: () -> s32 { return Frame() }\n');
     await fs.writeFile(path.join(project, '.vscode/settings.json'), JSON.stringify({
       'ziran.command': path.resolve(repo, '../ziran/build/bin/ziran'),

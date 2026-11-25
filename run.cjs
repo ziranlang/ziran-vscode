@@ -2,7 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createHash, randomBytes } = require('node:crypto');
-const { isKryonProgram, previewLocation, projectRoot, safeEnvironment } = require('./preview.cjs');
+const { previewLocation, projectRoot, safeEnvironment } = require('./preview.cjs');
 const { bundleArgs, importingPrograms, mainLine, modulePaths, noMainMessage, packageRoot,
   ziranCommand, ziranTool } = require('./targets.cjs');
 const moduleName = (file) => path.basename(file, '.zi');
@@ -10,10 +10,6 @@ const { INSPECTOR_MARKUP, INSPECTOR_SCRIPT, INSPECTOR_STYLE, TargetInspector } =
 const { platformArtifact, runRoute } = require('./platforms.cjs');
 
 const RUN_TIMEOUT_MS = 10000;
-// The portable runtime has no window host, so a kryon/app program is not run
-// there: App.Run would only return its failure status.
-const KRYON_PROGRAM_NOTICE = 'This Kryon program opens its own window. Run it with ▶ to see it live ' +
-  'in the Kryon preview. The targets below show its generated code.';
 
 // `ziran bundle --root . --entry hello:main -o hello.zx hello.zi`: the
 // file's main as ZX, which the selected platform's lowering turns into its
@@ -193,11 +189,6 @@ class RunPreview {
         status: 'No main to run' });
       return;
     }
-    if (await isKryonProgram(this.file)) {
-      Object.assign(this.state, { output: '', problems: '', time: '', failed: false,
-        hasMain: false, noMain: KRYON_PROGRAM_NOTICE, status: 'Runs in the Kryon preview' });
-      return;
-    }
     const bundle = path.join(this.workDirectory, 'program.zx');
     const project = await packageRoot(this.file);
     const cwd = project || path.dirname(this.file);
@@ -320,5 +311,5 @@ function activateRun(context, vscode) {
   );
 }
 
-module.exports = { KRYON_PROGRAM_NOTICE, RunPreview, activateRun, bundleStep, commandPath, execute, mainLine,
+module.exports = { RunPreview, activateRun, bundleStep, commandPath, execute, mainLine,
   runHtml, versionMismatchProblem, workDirectoryFor };

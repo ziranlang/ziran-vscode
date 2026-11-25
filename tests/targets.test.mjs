@@ -46,7 +46,7 @@ test('target arguments, command discovery and no-main guidance cover every targe
     await fs.mkdir(path.dirname(command), { recursive: true });
     await fs.mkdir(path.dirname(module), { recursive: true });
     await fs.writeFile(command, '#!/bin/sh\n', { mode: 0o755 });
-    await fs.writeFile(module, '#program_export\nFrame :: () -> s32 { return 1 }\n');
+    await fs.writeFile(module, 'Frame :: () -> s32 { return 1 }\n');
     await fs.writeFile(path.join(directory, 'site/desktop_hello.zi'), '#import "hello"\nmain :: () { Frame() }\n');
     await fs.writeFile(path.join(directory, 'site/other.zi'), '#import "hello"\nDraw :: () { Frame() }\n');
     await fs.writeFile(path.join(directory, 'site/alias.zi'), 'App :: #import "examples/hello";\nmain :: () { App.Frame() }\n');
@@ -170,7 +170,7 @@ test('real package builds expose each target, portable execution, IR and module 
       assert.match(listing.filtered, /^<hello:main>:[\s\S]*\n\n<hello:Add>:/);
       assert.deepEqual(await magic(view(native, 'binary').files[0]), [0x7f, 0x45, 0x4c, 0x46]);
     }
-    await fs.writeFile(source, '#program_export\nFrame :: () -> s32 { return 7 }\n');
+    await fs.writeFile(source, 'Frame :: () -> s32 { return 7 }\n');
     await fs.writeFile(path.join(directory, 'apps/screen/desktop_hello.zi'), '#import "hello"\nmain :: () -> s32 { return Frame() }\n');
     const expected = "hello.zi has no main; it's a module. Run a program that imports it, such as desktop_hello.zi.";
     for (const target of ['wasm', 'native']) assert.equal((await buildTarget(compiler, target, source, work, [])).message, expected);

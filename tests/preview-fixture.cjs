@@ -2,21 +2,28 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { parse, stringify } = require('@iarna/toml');
 
-const source = `using UI :: #import "kryon/Widgets";
+const source = `App :: #import "kryon/app";
+Button :: #import "kryon/button";
+Text :: #import "kryon/text";
+#import "kryon/geometry"
+#import "kryon/session"
 #import "std/number_text"
+
 clicks: s32;
-#program_export
-Frame :: (session: Session, viewport: Rectangle) -> s32 {
-    if Button(session, ButtonProps.{.key = 1,
-        .bounds = .{viewport.x + 20.0, viewport.y + 72.0, 300.0, 44.0},
+
+Frame :: (frame: App.Frame) {
+    session := Session.{.slot = frame.slot, .epoch = frame.epoch}
+    viewport := frame.viewport
+    if Button.Draw(session, Button.Props.{.bounds = .{viewport.x + 20.0, viewport.y + 72.0, 300.0, 44.0},
         .label = "Continue"}) != 0 { clicks += 1 }
     digits: [24]u8
-    Text(session, TextProps.{.key = 2,
-        .bounds = .{viewport.x + 20.0, viewport.y + 420.0, 100.0, 36.0},
+    Text.Draw(session, Text.Props.{.bounds = .{viewport.x + 20.0, viewport.y + 420.0, 100.0, 36.0},
         .text = FormatInteger(cast(s64)clicks, digits[:])})
-    return 0
 }
+
+main :: () -> s32 { return App.Run(App.Window.{.title = "button"}, Frame) }
 `;
+
 
 exports.createFixture = async (runtime, repo) => {
   const project = path.join(runtime, 'button');

@@ -144,8 +144,6 @@ test('ZIR version failures identify the selected compiler tools', () => {
 });
 
 test('dependency files reach the webview as keys and load only when asked', async () => {
-  const { KRYON_PROGRAM_NOTICE } = require('../run.cjs');
-  assert.doesNotMatch(KRYON_PROGRAM_NOTICE, /New Window/);
   const posted = [];
   const inspector = new TargetInspector({ vscode: {}, state: {}, post: () => {},
     send: (message) => posted.push(message), storage: '/extension-storage', rerun: () => {} });
