@@ -63,7 +63,8 @@ test('target builds expose source files and failures without build internals', a
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ziran-targets-'));
   try {
     const file = path.join(directory, 'hello.zi'); const command = path.join(directory, 'fake-ziran');
-    await fs.writeFile(file, 'first\n');
+    await fs.writeFile(file, '#import "helper"\nfirst\n');
+    await fs.writeFile(path.join(directory, 'helper.zi'), 'Done :: () { }\n');
     await fs.writeFile(command, `#!/bin/sh
 while [ $# -gt 0 ]; do case "$1" in --target=*) target=\${1#--target=};; -o) shift; output=$1;; esac; source=$1; shift; done
 if [ "$target" = plan9-c ]; then echo "hello.zi:1:1: unsupported" >&2; exit 1; fi
@@ -75,10 +76,12 @@ cp "$source" "$output/hello.$target"; echo runtime > "$output/runtime.h"; echo s
     // A source generator shows Source and ZIR, then its own output.
     assert.deepEqual(built.views.map(item => [item.id, item.label]), [['source', 'Source'], ['zir', 'ZIR'],
       ['generated', 'py']]);
-    assert.equal(view(built, 'source').files[0].text, 'first\n');
+    // A failed check still lists the program and the imports it reaches.
+    assert.deepEqual(view(built, 'source').files.map(item => item.name), ['hello.zi', 'helper.zi']);
+    assert.match(view(built, 'source').files[0].text, /first/);
     assert.match(built.views.find(item => item.id === 'zir').message, /^checked IR/);
     assert.deepEqual(view(built, 'generated').files.map(item => item.name), ['hello.py', 'runtime.h']);
-    assert.equal(view(built, 'generated').files[0].text, 'first\n');
+    assert.match(view(built, 'generated').files[0].text, /first/);
     assert.ok(built.views.every(item => !('caption' in item)));
     const failed = await buildTarget(command, 'plan9-c', file, work, []);
     assert.equal(failed.ok, false); assert.match(failed.message, /unsupported/);
@@ -363,7 +366,15 @@ for (const program of [kryonHello, kryonWindow]) {
         assert.ok(dependencies.length > 0, `${id} lists dependencies for the file dropdown`);
         assert.ok(dependencies.every(item => item.text === undefined && typeof item.load === 'function'));
       }
-      assert.match(await results.c.views.find(item => item.id === 'source').files.find(item => item.dependency).load(), /\S/);
+      // Source lists a file behind every ZIR dependency: std_math.zir is
+      // std/math.zi and a package's p93f..._geometry.zir is geometry.zi.
+      const sourceFiles = results.c.views.find(item => item.id === 'source').files;
+      const sourceNames = new Set(sourceFiles.map(item => item.name));
+      for (const name of results.c.views.find(item => item.id === 'zir').files
+        .filter(item => item.dependency).map(item => item.name))
+        assert.ok(sourceNames.has(`${name.replace(/\.zir$/, '').replace(/^std_/, 'std/')
+          .replace(/^p[0-9a-f]{16}_/, '')}.zi`), `${name} has a Source entry`);
+      assert.match(await sourceFiles.find(item => item.dependency).load(), /\S/);
     } finally { observeCommands(null); await fs.rm(work, { recursive: true, force: true }); }
   });
 }

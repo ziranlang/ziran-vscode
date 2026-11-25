@@ -713,22 +713,114 @@ async function findSource(module, roots) {
 }
 
 // The Source stage: the program's own modules, then the sources of the modules
-// it imports, read only when picked.
+// it imports, read only when picked. The checked build's module map names the
+// file behind every import, including the std and package modules the ZIR
+// stage lists; the module paths cover the rest. When the check fails, what
+// the program and its own modules import still lists.
+async function projectModuleMap(context) {
+  if (!context.project) return null;
+  try { return await fs.readFile(path.join(context.cwd, 'build', '.ziran', 'module-map.tsv'), 'utf8'); }
+  catch { return null; }
+}
+
+// The map's records, keyed the way the checked build names modules: the
+// project's own modules plainly (`geometry`), others prefixed (`std_math`,
+// `p93f065d02ff40edd_geometry`), plus the program package's import resolutions.
+function moduleMap(text) {
+  const sources = new Map();
+  const imports = new Map();
+  for (const line of text.split(/\r?\n/)) {
+    const fields = line.split('\t');
+    if (fields[0] === 'M' && fields.length >= 4) {
+      sources.set(fields[1] === 'root' ? fields[2] : `${fields[1]}_${fields[2]}`, fields[3]);
+    } else if (fields[0] === 'D' && fields.length >= 5 && fields[1] === 'root' && !imports.has(fields[2])) {
+      imports.set(fields[2], fields[3] === 'root' ? fields[4] : `${fields[3]}_${fields[4]}`);
+    }
+  }
+  return { sources, imports };
+}
+
+// The modules a source imports, as written: `helper`, `std/text`,
+// `kryon/geometry`.
+function importedModules(source) {
+  const names = [];
+  const pattern = /^[ \t]*(?:using[ \t]+)?(?:[A-Za-z_]\w*[ \t]*::[ \t]*)?#import[ \t]+"([^"]+)"/gm;
+  for (const match of source.matchAll(pattern)) if (!names.includes(match[1])) names.push(match[1]);
+  return names;
+}
+
+// The modules FILE's imports reach: the own modules beside it, following
+// imports between them, and every dependency import's text, breadth-first.
+async function importedTargets(file, own) {
+  const ownFound = [];
+  const dependencies = [];
+  const queued = new Set([path.basename(file)]);
+  const pending = [file];
+  while (pending.length) {
+    let source = '';
+    try { source = await fs.readFile(pending.shift(), 'utf8'); } catch { continue; }
+    for (const target of importedModules(source)) {
+      const module = target.includes('/') ? '' : target;
+      if (module && own.has(module)) {
+        if (!queued.has(`${module}.zi`)) {
+          queued.add(`${module}.zi`);
+          ownFound.push(module);
+          pending.push(path.join(path.dirname(file), `${module}.zi`));
+        }
+        continue;
+      }
+      if (!dependencies.includes(target)) dependencies.push(target);
+    }
+  }
+  return { own: ownFound, dependencies };
+}
+
 async function sourceView(context, names) {
   const { file } = context;
   const own = await ownModules(file);
-  const modules = names.map((name) => name.replace(/\.zir$/, '')).filter((name) => name !== moduleName(file));
+  const map = moduleMap(await projectModuleMap(context) || '');
+  const roots = await sourceRoots(context);
   const files = [{ name: path.basename(file), text: await readText(file) }];
   const dependencies = [];
-  const roots = await sourceRoots(context);
-  for (const module of modules) {
-    if (own.has(module)) {
+  const listed = new Set([path.basename(file)]);
+  const addOwn = async (module) => {
+    try {
       files.push({ name: `${module}.zi`, text: await readText(path.join(path.dirname(file), `${module}.zi`)) });
-      continue;
-    }
+      listed.add(`${module}.zi`);
+    } catch {}
+  };
+  // The checked name behind a module name or an import's `std/text` text.
+  const checkedName = (target) => map.imports.get(target) ?? (target.includes('/')
+    ? (/^std\//.test(target) ? `std_${target.slice(4)}` : target.slice(target.indexOf('/') + 1)) : target);
+  // The file behind a checked module: the map's exact record, else a search
+  // of the module paths.
+  const locate = async (module) => {
+    const mapped = map.sources.get(module);
+    if (mapped) return path.isAbsolute(mapped) ? mapped : path.join(context.cwd, mapped);
     const found = await findSource(module, roots);
-    if (found) dependencies.push(dependencyFile(found.name, () => readText(found.path), (await fs.stat(found.path)).size));
+    return found ? found.path : null;
+  };
+  const addDependency = async (module) => {
+    const resolved = await locate(module);
+    if (!resolved) return;
+    const std = /^std_(.+)$/.exec(module);
+    let name = std ? `std/${std[1]}.zi` : path.basename(resolved);
+    if (listed.has(name)) name = `${module}.zi`;
+    if (listed.has(name)) return;
+    listed.add(name);
+    let size;
+    try { size = (await fs.stat(resolved)).size; } catch {}
+    dependencies.push(dependencyFile(name, () => readText(resolved), size));
+  };
+  const checked = names.map((name) => name.replace(/\.zir$/, '')).filter((name) => name !== moduleName(file));
+  const fallback = checked.length ? null : await importedTargets(file, own);
+  const ownNames = (fallback ? fallback.own : checked.filter((module) => own.has(module))).sort();
+  const otherNames = (fallback ? fallback.dependencies.map(checkedName)
+    : checked.filter((module) => !own.has(module))).sort();
+  for (const module of ownNames) {
+    if (module !== moduleName(file) && !listed.has(`${module}.zi`)) await addOwn(module);
   }
+  for (const module of otherNames) await addDependency(module);
   return view('source', 'Source', [...files, ...dependencies]);
 }
 
