@@ -170,7 +170,8 @@ async function programSymbols(document) {
       const source = sources.get(symbol.module);
       symbol.file = source ? (path.basename(symbol.path) === path.basename(source) ? source :
         path.resolve(path.dirname(source), symbol.path)) : await diagnosticPath(file, project, symbol.path);
-      if (!own && !source && await diagnosticPath(file, project, symbol.source) === file) own = symbol.module;
+      if (!own && (source ? path.resolve(source) === path.resolve(file) :
+        await diagnosticPath(file, project, symbol.source) === file)) own = symbol.module;
     }
     // Alias -> module for the file's `Alias :: #import "..."` declarations.
     const aliases = new Map(apiImports(run.stdout || '')

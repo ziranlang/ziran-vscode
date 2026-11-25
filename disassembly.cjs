@@ -1,8 +1,7 @@
 // The whole of a direct ELF or PE as one listing: its headers, every region
 // of the file in order, code disassembled by objdump with function labels
-// from the native map, and data as bytes. Ziran's direct ELFs carry no
-// section headers, so objdump reads each code range as raw bytes at its
-// address.
+// from the native map, and data as bytes. Objdump reads each code range as
+// raw bytes at its address, including binaries without section headers.
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const os = require('node:os');

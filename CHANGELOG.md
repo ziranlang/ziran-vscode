@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Name dependency files by their import paths in every target view, and resolve source declarations through the package map instead of assuming hashed package names.
+- Keep the project's own completion scope when its modules resolve through the map, and use native ELF sections to keep literals and metadata out of instruction listings.
 - **Open in window** on the Wasm platform runs the program's ZX in the page, in the frame the web preview uses, instead of in Node, which has no host for its capabilities: a canvas profile with `codegen = "zx"` (`wasm`, which a single-file preview's own project now has) builds Kryon's canvas player around the bundle, which lowers it to Wasm in the page and runs `main` with the page's canvas as its window. A project with no such profile names that.
 - **Open in window** runs the build the Binary tab shows on every platform: on Linux x86-64, the native executable itself, which links a Kryon program's window from Kryon's registered desktop host library, instead of `zi2zx run`, which never found the registered host and stopped at "missing host capability". Native's Assembly and Binary for `examples/window.zi` show that executable instead of the machine-host gap, and a capability no registered library provides still shows its named gap.
 - Leave a viewport of room under the Targets views, so switching to a tab or view with a shorter block keeps the page where it was instead of pulling it up.

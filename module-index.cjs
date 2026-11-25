@@ -156,17 +156,19 @@ function packageModuleIds(files, paths) {
   return [...ids].sort();
 }
 
-// The file behind a module `ziran api` names. Package modules appear as
-// `p<package id>_<module>`; a project's module map holds that package id,
-// and NAME=DIR paths hold the module by its own name.
+// Resolve the compiler's module name through the actual package map or
+// the explicit NAME=DIR import namespace, including names with underscores.
 function moduleSource(moduleName, map, paths, existsSync) {
-  const match = /^(p[0-9a-f]{16})_(.+)$/.exec(moduleName || '');
-  if (!match) return null;
-  const mapped = map?.modules.get(`${match[1]}\t${match[2]}`);
-  if (mapped) return mapped;
+  for (const [key, file] of map?.modules || []) {
+    const [id, name] = key.split('\t');
+    if ((id === 'root' ? name : `${id}${id === 'std' ? '_' : '__'}${name}`) === moduleName) return file;
+  }
   for (const entry of packageEntries(paths)) {
-    for (const candidate of [path.join(entry.directory, match[2] + '.zi'),
-      path.join(entry.directory, match[2], 'module.zi')]) {
+    const prefix = `${entry.name.replace(/-/g, '_')}__`;
+    if (!moduleName?.startsWith(prefix)) continue;
+    const name = moduleName.slice(prefix.length);
+    for (const candidate of [path.join(entry.directory, name + '.zi'),
+      path.join(entry.directory, name, 'module.zi')]) {
       if (existsSync(candidate)) return candidate;
     }
   }

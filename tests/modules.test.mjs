@@ -79,9 +79,9 @@ test('NAME=DIR paths serve package-qualified imports outside a project', async (
   assert.deepEqual(packageCandidates('kryon/../secret', paths), []);
   assert.deepEqual(packageModuleIds(['/work/kryon/src/text.zi', '/work/kryon/src/ui/button/module.zi',
     '/work/kryon/src/ui/deep/x/y.zi', '/work/app/main.zi'], paths), ['kryon/button', 'kryon/text']);
-  const map = parseModuleMap('P\tp11e2ac7ed9577d35\t/cache/kryon\nM\tp11e2ac7ed9577d35\ttext\t/cache/kryon/src/text.zi\n');
-  assert.equal(moduleSource('p11e2ac7ed9577d35_text', map, [], () => false), '/cache/kryon/src/text.zi');
-  assert.equal(moduleSource('p59ed40033882ead0_text', null, paths,
+  const map = parseModuleMap('P\tkryon\t/cache/kryon\nM\tkryon\ttext\t/cache/kryon/src/text.zi\n');
+  assert.equal(moduleSource('kryon__text', map, [], () => false), '/cache/kryon/src/text.zi');
+  assert.equal(moduleSource('kryon__text', null, paths,
     (file) => file === '/work/kryon/src/ui/text.zi'), '/work/kryon/src/ui/text.zi');
   assert.equal(moduleSource('hello', map, paths, () => true), null);
 });

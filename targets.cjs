@@ -6,6 +6,7 @@ const { spawn } = require('node:child_process');
 const { parse } = require('@iarna/toml');
 const { manifestPath, projectRoot, runCommand: spawnCommand, safeEnvironment } = require('./preview.cjs');
 const { binaryListing } = require('./disassembly.cjs');
+const { moduleSource } = require('./module-index.cjs');
 const { DEFAULT_PLATFORM, platformArtifact, platformList, platformStages, selectedPlatform } = require('./platforms.cjs');
 
 const TARGETS = [
@@ -725,19 +726,35 @@ async function projectModuleMap(context) {
 
 // The map's records, keyed the way the checked build names modules: the
 // project's own modules plainly (`geometry`), others prefixed (`std_math`,
-// `p93f065d02ff40edd_geometry`), plus the program package's import resolutions.
+// `kryon__geometry`), plus their import spellings for the file dropdown.
 function moduleMap(text) {
   const sources = new Map();
   const imports = new Map();
+  const labels = new Map();
   for (const line of text.split(/\r?\n/)) {
     const fields = line.split('\t');
     if (fields[0] === 'M' && fields.length >= 4) {
-      sources.set(fields[1] === 'root' ? fields[2] : `${fields[1]}_${fields[2]}`, fields[3]);
+      const name = fields[1] === 'root' ? fields[2] : `${fields[1]}${fields[1] === 'std' ? '_' : '__'}${fields[2]}`;
+      sources.set(name, fields[3]);
+      labels.set(name, fields[1] === 'root' ? fields[2] : `${fields[1]}/${fields[2]}`);
     } else if (fields[0] === 'D' && fields.length >= 5 && fields[1] === 'root' && !imports.has(fields[2])) {
-      imports.set(fields[2], fields[3] === 'root' ? fields[4] : `${fields[3]}_${fields[4]}`);
+      imports.set(fields[2], fields[3] === 'root' ? fields[4] : `${fields[3]}${fields[3] === 'std' ? '_' : '__'}${fields[4]}`);
     }
   }
-  return { sources, imports };
+  for (const [visible, name] of imports) if (visible.includes('/')) labels.set(name, visible);
+  return { sources, imports, labels };
+}
+
+function moduleLabel(module, map, context) {
+  const mapped = map.labels.get(module);
+  if (mapped) return mapped;
+  for (const entry of context.paths) {
+    const match = /^([A-Za-z_][\w-]*)=/.exec(entry);
+    if (!match) continue;
+    const prefix = `${match[1].replace(/-/g, '_')}__`;
+    if (module.startsWith(prefix)) return `${match[1]}/${module.slice(prefix.length)}`;
+  }
+  return module.startsWith('std_') ? `std/${module.slice(4)}` : null;
 }
 
 // The modules a source imports, as written: `helper`, `std/text`,
@@ -797,14 +814,15 @@ async function sourceView(context, names) {
   const locate = async (module) => {
     const mapped = map.sources.get(module);
     if (mapped) return path.isAbsolute(mapped) ? mapped : path.join(context.cwd, mapped);
+    const packageFile = moduleSource(module, null, context.paths, fsSync.existsSync);
+    if (packageFile) return packageFile;
     const found = await findSource(module, roots);
     return found ? found.path : null;
   };
   const addDependency = async (module) => {
     const resolved = await locate(module);
     if (!resolved) return;
-    const std = /^std_(.+)$/.exec(module);
-    let name = std ? `std/${std[1]}.zi` : path.basename(resolved);
+    let name = `${moduleLabel(module, map, context) || path.basename(resolved, '.zi')}.zi`;
     if (listed.has(name)) name = `${module}.zi`;
     if (listed.has(name)) return;
     listed.add(name);
@@ -991,11 +1009,16 @@ async function buildTarget(command, target, file, workDirectory, paths, options 
   try {
     const builder = BUILDERS[target];
     const result = builder ? await builder(context) : await buildSource(context, target);
+    const names = moduleMap(await projectModuleMap(context) || '');
     // The table, not the builder, decides the tabs and their order.
     const order = stagesOf(target, target === 'native' ? options.platform : null);
     const views = order.map(([id, label]) => {
       const found = result.views.find((item) => item.id === id);
-      return found && { ...found, label };
+      return found && { ...found, label, files: found.files.map((file) => {
+        const extension = path.extname(file.name);
+        const name = file.dependency && moduleLabel(file.name.slice(0, -extension.length), names, context);
+        return name ? { ...file, name: name + extension } : file;
+      }) };
     }).filter(Boolean);
     return { id: target, ...result, views };
   } catch (error) {

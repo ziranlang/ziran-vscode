@@ -258,12 +258,27 @@ function elfRegions(data, elf, map, own) {
   const mapped = image && [image.text_file_offset, image.text_size].every(Number.isSafeInteger) &&
     image.text_file_offset >= 0 && image.text_file_offset + image.text_size <= data.length;
   if (mapped) {
+    // Native maps include literals in their text extent. ELF sections mark
+    // the data and metadata within that extent so they are never decoded
+    // as instructions, while the map still supplies function ownership.
+    const sections = elf.sections.filter(section => section.type !== 0 && section.type !== 8 &&
+      section.size > 0 && !(section.flags & 4));
+    const taken = sections.map(section => ({ start: section.offset, end: section.offset + section.size }));
+    for (const section of sections) {
+      const kind = sectionKind(section);
+      add(section.offset, section.offset + section.size, kind,
+        kind === 'data' ? 'data' : section.name || `section ${section.index}`);
+    }
     const entry = Number.isSafeInteger(image.text_virtual_address) ? elf.entry - image.text_virtual_address : -1;
     for (const part of textParts(map, own, entry)) {
-      add(image.text_file_offset + part.begin, image.text_file_offset + part.end, part.kind, part.label);
+      for (const piece of subtract(image.text_file_offset + part.begin, image.text_file_offset + part.end, taken)) {
+        add(piece.start, piece.end, part.kind, part.label);
+      }
     }
     if ([image.data_file_offset, image.data_size].every(Number.isSafeInteger) && image.data_size > 0) {
-      add(image.data_file_offset, image.data_file_offset + image.data_size, 'data', 'data');
+      for (const piece of subtract(image.data_file_offset, image.data_file_offset + image.data_size, taken)) {
+        add(piece.start, piece.end, 'data', 'data');
+      }
     }
   } else if (elf.sections.some((section) => section.type !== 0)) {
     for (const section of elf.sections) {
