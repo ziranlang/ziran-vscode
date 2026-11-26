@@ -101,9 +101,9 @@ try {
       await run.locator('#views').getByRole('tab', {name: tab, exact: true}).click({timeout:180000});
       const extension = {C:'c', Go:'go'}[tab];
       await run.locator('#code').filter({hasText: /function|#include|package/}).waitFor({timeout:180000});
-      // The program's own module is shown first; dependencies sit in their own picker.
-      const own = run.locator('#own-files');
-      if (await own.count()) assert.equal(await own.inputValue(), `${path.basename(entry, '.zi')}.${extension}`);
+      // All files share one tree; the entry module is selected first.
+      const own = run.locator('#file-tree button[aria-selected=true]');
+      assert.equal(await own.getAttribute('data-file'), `${path.basename(entry, '.zi')}.${extension}`);
       assert.doesNotMatch(await run.locator('#code').textContent(), /cannot find imported module/);
     }
     // The program's bundle and run use one toolchain: a project bundle is

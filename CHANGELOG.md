@@ -2,7 +2,10 @@
 
 ## Unreleased
 
-- Copy registered Windows host DLLs and their imported runtime DLLs beside
+- Browse every target’s files in a keyboard-accessible tree, with Project and
+  Packages folders, instead of separate dependency and own-code dropdowns.
+
+- Copy registered Windows host DLLs and their sibling runtime DLLs beside
   generated PE executables, so native GUI programs run under Wine.
 
 - Check C, Go and portable source with their own compiler targets. C and Go
@@ -20,7 +23,7 @@
 - Fix a crash when an `objdump` candidate is not installed: its start error and exit closed the listing file twice.
 
 - Show every target's real stages from one table: Source, ZIR, LIR, Optimized, ZX, then the target's output. C and Go compile the checked ZIR directly and show Source and ZIR only; WebAssembly and Native show the whole chain. Shared stages are built once, ZIR is back as a stage (listed by the toolchain that wrote it), and C, Go, LIR and ZX steps no longer run for tabs that do not use them.
-- Show the file dropdown on Source and ZIR as well as the generated code: the program's own modules first, dependency modules loaded only when picked.
+- Show all Source, ZIR and generated files in one tree: the program's own modules first, with dependency content loaded when opened.
 - Color the Source tab with the extension's own Ziran grammar, dependency sources included, and add light highlighting for assembly.
 - **Open in window** now bundles the program to ZX and runs it natively with `zi2zx run --backend native`, one process, replaced by the next click and ended with the preview; no C or engine fallback, and a gap is shown by name.
 - The Kryon preview follows the active `.zi` editor, drops the padding around the live frame and its empty controls strip, and makes the frame's page transparent over the editor's background.
@@ -30,7 +33,7 @@
 - Show the whole pipeline for every target, built once and shared, then the target's own output (C or Go with Assembly and Binary, WAT and Binary, or Native's Assembly and Binary).
 - Remove the views' description lines and the generated comment headers above Native's disassembly.
 - Show the Kryon preview's targets right under its live window, for the previewed source or the project's entry, rebuilt on every save. **Inspect Targets** is removed from the preview and the editor title bar. **Open in window** runs a Kryon program's C executable in a window of its own; opening it again replaces that window and closing the preview ends it.
-- Show only the program's own code in the Run pane's generated views. For Kryon's 6-line `examples/window.zi`, C Source opens `window.c` (546 bytes with `window.h`) instead of the 139 C files (832 KB) the build writes for the Kryon desktop host. Every other module is listed under **Dependencies** and is read, compiled to assembly or inspected only when picked. The same applies to Go.
+- Open the program's entry module first in generated views. All files remain available in the Project and Packages tree; dependency text, assembly and inspected modules load when opened.
 - Remove the Kryon preview's raw Kryon-profile **Generated C** and **ZIR (inspected)** dumps.
 - Show a failed target as one line, with the tool's full output collapsed under it.
 - Run Native through Ziran's renamed tools: `zi2zx` writes LIR, the optimization report and `final.zx`, `zx2native` writes the map and ELF, and a missing tool is named. The old `zi2asm` name is not a fallback.

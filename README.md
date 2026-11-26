@@ -21,7 +21,7 @@ Click ▶ in the editor title bar, or **▶ Run** above `main`, to open the **Ru
 pane beside a `.zi` file. It shows the program's output in a window, with the
 run time and any build or runtime errors below it (a run stops after 10
 seconds), and **Targets**: one tab per target (C, Go, WebAssembly and Native),
-with syntax highlighting and a file picker; the checkboxes choose the targets
+with syntax highlighting and a file tree; the checkboxes choose the targets
 and save them to `ziran.previewTargets`.
 
 Every target shows one chain, in one order, from the same builds: **Source**,
@@ -34,9 +34,10 @@ stage, then **WAT** and **Binary**, or **Assembly** and **Binary**).
 `TARGET_STAGES` in `targets.cjs` is the one table behind both the tabs and the
 commands each build runs. C and Go check their own target-specific ZIR;
 WebAssembly and Native share the portable frontend. Source and ZIR therefore
-show the dependencies selected for that code generator. They list the program's own modules first,
-then its dependencies, read only when picked from the file dropdown above the
-code. Ziran source is colored with this extension's grammar; the other tabs use
+show the dependencies selected for that code generator. A single file tree
+groups every file into Project and Packages, with the entry module open first.
+File contents load when opened; folder state and the selected file are remembered.
+Ziran source is colored with this extension's grammar; the other tabs use
 light highlighting in the editor's theme.
 
 Saving a `.zi` file in the same directory reruns everything; **Run again** does
@@ -59,8 +60,8 @@ Native's output changes:
 - **Linux x86-64**: an ELF, run directly.
 - **Windows x86-64**: a PE `.exe` (`zx2native --platform windows`), run under
   Wine with a private `WINEPREFIX` in the extension's storage and
-  `WINEDEBUG=-all`. Imported DLLs are copied from registered host libraries
-  and their sibling runtime DLLs, recursively, beside the executable.
+  `WINEDEBUG=-all`. Registered host libraries and their sibling runtime DLLs
+  are copied beside the executable, including backends loaded dynamically.
 - **Linux or Android AArch64 and ARMv7**: an ELF, run on an attached device
   through adb. `ziran.adbCommands` lists how to reach adb, such as `adb` or
   `ssh user@host adb`; the first device whose primary Android ABI matches runs

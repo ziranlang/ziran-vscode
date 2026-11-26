@@ -118,10 +118,11 @@ test('run commands, webview navigation and generated-code highlighting stay vali
   // No ZIR tab, no view descriptions and no separate header toggle.
   for (const removed of [/'ZIR'|irModules|irError/, /caption/, /hex-headers|Show full file|hex-code/])
     assert.doesNotMatch(html, removed);
-  // Dependency files sit in their own picker, and a failure reads as one line
+  // All files sit in the tree, and a failure reads as one line
   // with the tool's full output collapsed beneath it.
-  for (const pattern of [/'dependency-files'/, /'own-files'/, /← Own code/, /id="problem-details" hidden/])
+  for (const pattern of [/id="file-tree" role="tree"/, /'Project'/, /'Packages'/, /id="problem-details" hidden/])
     assert.match(html, pattern);
+  assert.doesNotMatch(html, /dependency-files|own-files|← Own code/);
   assert.doesNotThrow(() => new vm.Script(html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]));
   const syntax = {}; vm.runInNewContext(`${HIGHLIGHT_SOURCE}\nthis.highlight=highlight;this.languageOf=languageOf;`, syntax);
   const highlighted = syntax.highlight('int32_t main(void) { return 42; } // done <x>\n#include "a.h"', 'c');

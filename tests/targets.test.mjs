@@ -233,7 +233,7 @@ test('Native names the missing renamed tool', async () => {
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 const kryonWindow = path.resolve('../../kryonlabs/kryon/examples/window.zi');
-test('a Kryon program gets the C, Go, Wasm and Native tabs with only its own code shown',
+test('a Kryon program gets every target with an entry file and lazy shared code',
   { skip: !existsSync(kryonWindow) || !existsSync(path.join(os.homedir(), '.local/bin/ziran')) }, async () => {
   const vscode = { Uri: { file: fsPath => ({ fsPath }) }, workspace: {
     workspaceFolders: [], getConfiguration: () => ({ get: (_, fallback) => fallback }) } };
@@ -252,7 +252,9 @@ test('a Kryon program gets the C, Go, Wasm and Native tabs with only its own cod
       assert.equal(own[0], first, target);
       assert.ok(own.every(name => name.startsWith('window.')), `${target}: ${own}`);
       assert.match(files[0].text, /main/);
-      assert.ok(files.some(item => item.dependency && item.name.startsWith('kryon/app')), `${target} lists Kryon as dependencies`);
+      assert.ok(files.some(item => item.dependency && (target === 'c'
+        ? item.name === 'window_dependencies.c' : item.name.startsWith('kryon/app'))),
+      `${target} lists its shared implementation`);
       assert.ok(files.filter(item => item.dependency).every(item => item.text === undefined));
       const ownBytes = files.filter(item => !item.dependency).reduce((sum, item) => sum + item.text.length, 0);
       const dependencyBytes = files.filter(item => item.dependency).reduce((sum, item) => sum + (item.size || 0), 0);

@@ -1,6 +1,6 @@
 // The target views shared by the Run pane and the Kryon preview: one tab per
 // target, each with the shared stages (Source, LIR, Optimized, ZX) and the
-// target's own output (Native's from the Platform dropdown), a file picker with dependencies loaded on request, and
+// target's own output (Native's from the Platform dropdown), a file tree with texts loaded on request, and
 // a paged hex view. Binaries stay on disk; the webview asks for bytes.
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -157,6 +157,16 @@ const INSPECTOR_STYLE = `
   .file-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
   .file-row:empty { display: none; }
   .file-row label { color: var(--vscode-descriptionForeground); }
+  .file-workspace { display: flex; align-items: flex-start; gap: 12px; }
+  .file-content { flex: 1; min-width: 0; }
+  #file-tree { flex: 0 0 220px; max-width: 35%; max-height: 70vh; overflow: auto; padding: 4px 0; border-right: 1px solid var(--vscode-panel-border); }
+  #file-tree summary { cursor: pointer; padding: 4px; white-space: nowrap; }
+  #file-tree [role="group"] { padding-left: 14px; }
+  #code-section #file-tree button { display: block; width: 100%; text-align: left; padding: 4px 8px; background: transparent; color: var(--vscode-foreground); white-space: nowrap; }
+  #code-section #file-tree button:hover { background: var(--vscode-list-hoverBackground); }
+  #code-section #file-tree [aria-selected="true"] { color: var(--vscode-list-activeSelectionForeground); background: var(--vscode-list-activeSelectionBackground); }
+  #file-name { overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); }
+  @media (max-width: 600px) { .file-workspace { flex-direction: column; } #file-tree { flex: auto; width: 100%; max-width: none; max-height: 180px; border-right: 0; border-bottom: 1px solid var(--vscode-panel-border); } .file-content { width: 100%; } }
   #problem-details { margin-top: 8px; }
   #problem-details summary { cursor: pointer; color: var(--vscode-descriptionForeground); }
   .views:empty { display: none; }
@@ -187,11 +197,12 @@ const INSPECTOR_MARKUP = `<details id="code-section" open><summary>Targets</summ
 <div class="targets" id="targets"></div>
 <div class="tabs" id="tabs" role="tablist" aria-label="Target"></div>
 <div class="tabs views" id="views" role="tablist" aria-label="View"></div>
+<div class="file-workspace"><nav id="file-tree" role="tree" aria-label="Files" hidden></nav><div class="file-content">
 <div class="file-row" id="file-row"></div>
 <pre id="code"></pre>
 <details id="problem-details" hidden><summary>Full output</summary><pre id="problem-text"></pre></details>
 <div id="hex" hidden><div class="hex-bar"><span id="hex-title"></span><input id="hex-goto" type="text" placeholder="Go to offset (hex)" aria-label="Go to offset"></div>
-<div class="hex-scroll" id="hex-scroll" tabindex="0" role="region" aria-label="Hex view"><div id="hex-spacer"></div><pre id="hex-rows"></pre></div></div></details>`;
+<div class="hex-scroll" id="hex-scroll" tabindex="0" role="region" aria-label="Hex view"><div id="hex-spacer"></div><pre id="hex-rows"></pre></div></div></div></div></details>`;
 
 // The webview side. The page defines api and byId, passes every message to
 // inspector.receive and each state to inspector.render.
@@ -204,12 +215,13 @@ const inspector = (() => {
   let selected = saved.selected || '';
   const files = saved.files || {};
   const views = saved.views || {};
+  const folders = saved.folders || {};
   // Dependency files arrive from the extension when first shown.
   const texts = new Map();
   const htmls = new Map();
   let textGeneration = -1;
   let programOnly = saved.programOnly === true;
-  const remember = () => api.setState({ ...(api.getState() || {}), selected, files, views, programOnly,
+  const remember = () => api.setState({ ...(api.getState() || {}), selected, files, views, folders, programOnly,
     codeOpen: byId('code-section').open });
   if (saved.codeOpen === false) byId('code-section').open = false;
   byId('code-section').addEventListener('toggle', () => { remember(); renderHex(); });
@@ -341,21 +353,100 @@ const inspector = (() => {
     byId('problem-text').textContent = lines.length > 1 ? text : '';
     byId('problem-details').hidden = lines.length < 2;
   };
-  const sizeText = (bytes) => bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + ' MB' :
-    bytes >= 1024 ? Math.round(bytes / 1024) + ' KB' : bytes + ' bytes';
-  const fileSelect = (id, label, first, items, value) => {
-    const select = document.createElement('select');
-    select.id = id;
-    select.setAttribute('aria-label', label);
-    for (const [optionValue, text] of [...(first ? [first] : []), ...items.map((file) => [file.name, file.name])]) {
-      const option = document.createElement('option');
-      option.value = optionValue;
-      option.textContent = text;
-      select.append(option);
+  const fileTree = (items, chosen, fileKey, focusKey, scrollTop) => {
+    const tree = byId('file-tree');
+    tree.hidden = false;
+    const roots = new Map();
+    for (const file of items) {
+      const parts = [file.dependency ? 'Packages' : 'Project', ...file.name.split('/').filter(Boolean)];
+      let level = roots;
+      for (const name of parts.slice(0, -1)) {
+        if (!level.has(name)) level.set(name, { children: new Map() });
+        level = level.get(name).children;
+      }
+      level.set(parts.at(-1), { file });
     }
-    select.value = value;
-    return select;
+    const append = (parent, entries, prefix) => {
+      const ordered = [...entries].sort(([a, left], [b, right]) =>
+        (prefix ? 0 : Number(b === 'Project') - Number(a === 'Project')) ||
+        Number(Boolean(right.children)) - Number(Boolean(left.children)) || a.localeCompare(b, undefined, { numeric: true }));
+      for (const [name, node] of ordered) {
+        if (node.children) {
+          const directory = document.createElement('details');
+          const key = fileKey + '/' + prefix + name;
+          directory.open = folders[key] !== false;
+          const label = document.createElement('summary');
+          label.textContent = name;
+          label.dataset.treeKey = prefix + name + '/';
+          label.tabIndex = -1;
+          label.setAttribute('role', 'treeitem');
+          label.setAttribute('aria-expanded', String(directory.open));
+          const group = document.createElement('div');
+          group.setAttribute('role', 'group');
+          append(group, node.children, prefix + name + '/');
+          directory.append(label, group);
+          directory.addEventListener('toggle', () => {
+            folders[key] = directory.open;
+            label.setAttribute('aria-expanded', String(directory.open));
+            remember();
+          });
+          parent.append(directory);
+        } else {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = name;
+          button.title = node.file.name;
+          button.dataset.file = node.file.name;
+          button.dataset.treeKey = prefix + name;
+          button.tabIndex = node.file === chosen ? 0 : -1;
+          button.setAttribute('role', 'treeitem');
+          button.setAttribute('aria-selected', String(node.file === chosen));
+          button.addEventListener('click', () => {
+            files[fileKey] = node.file.name;
+            remember();
+            button.focus();
+            render();
+          });
+          parent.append(button);
+        }
+      }
+    };
+    append(tree, roots, '');
+    tree.scrollTop = scrollTop;
+    if (focusKey) [...tree.querySelectorAll('[data-tree-key]')]
+      .find(item => item.dataset.treeKey === focusKey)?.focus({ preventScroll: true });
   };
+  byId('file-tree').addEventListener('focusin', event => {
+    if (!event.target.matches('[role=treeitem]')) return;
+    for (const item of byId('file-tree').querySelectorAll('[role=treeitem]'))
+      item.tabIndex = item === event.target ? 0 : -1;
+  });
+  byId('file-tree').addEventListener('keydown', event => {
+    const item = event.target;
+    if (!item.matches('[role=treeitem]')) return;
+    const items = [...byId('file-tree').querySelectorAll('[role=treeitem]')]
+      .filter(node => node.getClientRects().length);
+    const index = items.indexOf(item);
+    const directory = item.tagName === 'SUMMARY' ? item.parentElement : null;
+    let next;
+    switch (event.key) {
+      case 'ArrowDown': next = items[Math.min(index + 1, items.length - 1)]; break;
+      case 'ArrowUp': next = items[Math.max(index - 1, 0)]; break;
+      case 'Home': next = items[0]; break;
+      case 'End': next = items.at(-1); break;
+      case 'ArrowRight':
+        if (directory && !directory.open) directory.open = true;
+        else if (directory) next = items[index + 1];
+        break;
+      case 'ArrowLeft':
+        if (directory?.open) directory.open = false;
+        else next = item.parentElement.closest('[role=group]')?.parentElement.querySelector('summary');
+        break;
+      default: return;
+    }
+    event.preventDefault();
+    if (next) next.focus();
+  });
   const filterToggle = (label) => {
     const wrap = document.createElement('label');
     const box = document.createElement('input');
@@ -415,6 +506,10 @@ const inspector = (() => {
     viewTabs.replaceChildren();
     const row = byId('file-row');
     row.replaceChildren();
+    const treeScroll = byId('file-tree').scrollTop;
+    const treeFocus = byId('file-tree').contains(document.activeElement) ? document.activeElement.dataset.treeKey : '';
+    byId('file-tree').replaceChildren();
+    byId('file-tree').hidden = true;
     const code = byId('code');
     code.className = '';
     byId('problem-details').hidden = true;
@@ -444,29 +539,14 @@ const inspector = (() => {
     if (!current) { hideHex(); code.textContent = ''; return; }
     if (!current.ok) { showProblem(current.message); return; }
     const fileKey = result.id + '/' + current.id;
-    // The program's own files are shown; dependencies open only on request.
-    const own = current.files.filter((file) => !file.dependency);
-    const dependencies = current.files.filter((file) => file.dependency);
-    const chosen = current.files.find((file) => file.name === files[fileKey]) || own[0] || current.files[0];
-    const choose = (select) => select.addEventListener('change', () => {
-      files[fileKey] = select.value; remember(); render();
-    });
-    if (own.length > 1) {
-      const select = fileSelect('own-files', 'Generated file', null, own, chosen && !chosen.dependency ? chosen.name : '');
-      choose(select);
-      row.append(select);
-    }
-    if (dependencies.length) {
-      const sized = dependencies.every((file) => Number.isSafeInteger(file.size));
-      const total = sized ? ' · ' + sizeText(dependencies.reduce((sum, file) => sum + file.size, 0)) : '';
-      const first = chosen && chosen.dependency ? ['', '← Own code'] :
-        ['', 'Dependencies (' + dependencies.length + (dependencies.length === 1 ? ' file' : ' files') + total + ')'];
-      const select = fileSelect('dependency-files', 'Dependency file', first, dependencies,
-        chosen && chosen.dependency ? chosen.name : '');
-      choose(select);
-      row.append(select);
-    }
+    const chosen = current.files.find((file) => file.name === files[fileKey]) ||
+      current.files.find(file => !file.dependency) || current.files[0];
     if (!chosen) { hideHex(); code.textContent = 'No files.'; return; }
+    fileTree(current.files, chosen, fileKey, treeFocus, treeScroll);
+    const name = document.createElement('span');
+    name.id = 'file-name';
+    name.textContent = chosen.name;
+    row.append(name);
     if (typeof chosen.filtered === 'string') row.append(filterToggle(chosen.filterLabel || 'Hide headers'));
     if (chosen.binary) {
       if (hexFilterable(chosen.binary.regions)) row.append(filterToggle(chosen.binary.filterLabel || 'Hide headers'));

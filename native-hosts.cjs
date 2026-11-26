@@ -1,4 +1,4 @@
-// Match zx2native's host registry, then deploy only the PE's imported DLLs.
+// Match zx2native's host registry, then deploy the selected providers' runtimes.
 // A Windows host and its dependencies stay together in the provider directory.
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -35,11 +35,14 @@ async function deployPeLibraries(file, environment = process.env) {
   // Fresh providers precede copies left by an earlier build.
   const directories = [...await libraryDirectories(environment), output];
   const candidates = new Map();
+  const modules = new Map();
   for (const directory of [...new Set(directories)]) {
     let names;
     try { names = await fs.readdir(directory); }
     catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) continue; throw error; }
-    for (const name of names.filter(name => /\.dll$/i.test(name)).sort()) {
+    const dlls = names.filter(name => /\.dll$/i.test(name)).sort();
+    modules.set(directory, dlls);
+    for (const name of dlls) {
       const key = name.toLowerCase();
       const list = candidates.get(key) || [];
       list.push(path.join(directory, name));
@@ -48,6 +51,7 @@ async function deployPeLibraries(file, environment = process.env) {
   }
   const pending = image.imports.map(item => item.library);
   const visited = new Set();
+  const providers = new Set();
   const deployed = [];
   while (pending.length) {
     const name = pending.shift();
@@ -61,6 +65,13 @@ async function deployPeLibraries(file, environment = process.env) {
       if (source !== destination) {
         await fs.copyFile(source, destination);
         deployed.push(destination);
+      }
+      const directory = path.dirname(source);
+      if (directory !== output && !providers.has(directory)) {
+        providers.add(directory);
+        // LoadLibrary dependencies (for example SDL2's SDL3 backend) are
+        // absent from PE import tables. A provider ships them as siblings.
+        pending.push(...modules.get(directory));
       }
       pending.push(...library.imports.map(item => item.library));
       break;
