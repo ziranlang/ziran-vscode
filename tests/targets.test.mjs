@@ -338,7 +338,7 @@ for (const program of [kryonHello, kryonWindow]) {
       observeCommands(null);
       assert.ok(commands.includes('ziran') && commands.includes('zi-inspect'), 'ZIR is checked and listed');
       assert.equal(commands.includes('zi2zx') || commands.includes('zx2native'), false, 'C and Go run no ZX step');
-      // Every target at once shares one pipeline, built once.
+      // Each frontend checks its own branches; portable targets share their pipeline.
       const pipeline = startPipeline(command, program, path.join(work, 'shared'), [],
         { ...options, targets: TARGETS.map(item => item.id) });
       const results = {};
@@ -347,12 +347,17 @@ for (const program of [kryonHello, kryonWindow]) {
         assert.equal(results[target].ok, true, `${target}: ${results[target].message}`);
         assert.deepEqual(results[target].views.map(item => [item.id, item.label]), stagesOf(target), target);
       }
-      // The same source gives the same stage content on every target.
+      // Source and checked dependencies follow the selected code generator.
       const text = async (result, id) => Promise.all(result.views.find(item => item.id === id).files.map(async file =>
         [file.name, file.text ?? (file.load ? await file.load() : (await fs.readFile(file.binary.path)).toString('base64'))]));
-      for (const id of ['source', 'zir']) {
-        const expected = JSON.stringify((await text(results.c, id)).slice(0, 3));
-        for (const target of ['go', 'wasm', 'native']) assert.equal(JSON.stringify((await text(results[target], id)).slice(0, 3)), expected, `${target} ${id}`);
+      const dependencies = (target) => results[target].views.find(item => item.id === 'source').files
+        .filter(item => item.dependency).map(item => item.name).join('\n');
+      assert.doesNotMatch(dependencies('c'), /frames_zx|zx_window/);
+      assert.doesNotMatch(dependencies('go'), /frames_zx|frames_desktop|zx_window|desktop_window/);
+      assert.doesNotMatch(dependencies('native'), /frames_desktop|desktop_window/);
+      if (program === kryonHello) {
+        assert.match(dependencies('c'), /kryon\/host\/desktop/);
+        assert.match(dependencies('native'), /frames_zx/);
       }
       for (const id of ['lowered', 'optimized', 'zx']) {
         assert.equal(JSON.stringify(await text(results.wasm, id)), JSON.stringify(await text(results.native, id)), id);

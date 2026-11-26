@@ -384,8 +384,8 @@ function bundleArgs(file, paths, bundle, project = false) {
     '--entry', `${moduleName(file)}:main`, '-o', bundle, file];
 }
 
-function irArgs(file, paths, output, project = false, entry = '') {
-  const args = ['ir', ...sourceArgs(file, paths, project)];
+function irArgs(file, paths, output, project = false, entry = '', target = 'zx') {
+  const args = ['ir', `--target=${target}`, ...sourceArgs(file, paths, project)];
   if (entry) args.push('--entry', entry);
   args.push('-o', output, file);
   return args;
@@ -651,7 +651,7 @@ async function checkedProgram(context, directory) {
   const { command, file, paths, project, cwd, hasMain } = context;
   const entry = hasMain ? `${moduleName(file)}:main` : '';
   await fs.rm(directory, { recursive: true, force: true });
-  const saved = await runCommand(command, irArgs(file, paths, directory, project, entry), cwd);
+  const saved = await runCommand(command, irArgs(file, paths, directory, project, entry, context.frontend), cwd);
   if (saved.code !== 0) throw new Error(`checked IR: ${problem(saved, 'ziran ir')}`);
   const input = path.join(directory, `${moduleName(file)}.zir`);
   if (!(await exists(input))) throw new Error(`checked IR: ziran ir wrote no ${path.basename(input)}`);
@@ -986,11 +986,20 @@ async function targetContext(command, file, output, paths, options = {}) {
     cwd: project || path.dirname(file), hasMain, noMain, folders: options.folders || [] };
 }
 
-// The shared stages for FILE, built once under DIRECTORY for the TARGETS
-// that show them.
-async function startPipeline(command, file, directory, paths, options = {}) {
-  const context = await targetContext(command, file, directory, paths, options);
-  return buildPipeline({ ...context, stages: chainFor(options.targets || []) });
+// C, Go and portable code freeze different compile-time branches into ZIR.
+// Share a pipeline only between targets that use the same frontend contract.
+function startPipeline(command, file, directory, paths, options = {}) {
+  const frontendOf = (target) => target === 'c' || target === 'go' ? target : 'zx';
+  const pipelines = new Map();
+  return (target) => {
+    const frontend = frontendOf(target);
+    if (!pipelines.has(frontend)) {
+      const targets = (options.targets || [target]).filter((item) => frontendOf(item) === frontend);
+      pipelines.set(frontend, targetContext(command, file, path.join(directory, frontend), paths, options)
+        .then((context) => buildPipeline({ ...context, frontend, stages: chainFor(targets) })));
+    }
+    return pipelines.get(frontend);
+  };
 }
 
 // Build FILE for TARGET under WORKDIRECTORY and return its views: the shared
@@ -1003,9 +1012,9 @@ async function buildTarget(command, target, file, workDirectory, paths, options 
   await fs.mkdir(work, { recursive: true });
   const context = { ...await targetContext(command, file, output, paths, options), work, target,
     platform: options.platform || null };
-  let pipeline = options.pipeline;
-  context.pipeline = () => (pipeline ||= startPipeline(command, file,
-    path.join(workDirectory, `${target}.pipeline`), paths, { ...context, targets: [target] }));
+  const pipeline = options.pipeline || startPipeline(command, file,
+    path.join(workDirectory, `${target}.pipeline`), paths, { ...context, targets: [target] });
+  context.pipeline = () => pipeline(target);
   try {
     const builder = BUILDERS[target];
     const result = builder ? await builder(context) : await buildSource(context, target);

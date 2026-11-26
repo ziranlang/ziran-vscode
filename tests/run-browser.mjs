@@ -207,7 +207,8 @@ try {
     await view('Source').click();
     assert.match(await code(), /Hello, World!/);
     await view('Assembly').click();
-    assert.match(await code(), /^<hello:main>:\n[\s\S]*\tret/);
+    // Native tail calls end in a jump instead of a separate return.
+    assert.match(await code(), /^<hello:main>:\n[\s\S]*\t(?:ret|jmp)\b/);
     await run.locator('#program-only').uncheck();
     assert.match(await code(), /^ELF header\n[\s\S]*\nProgram headers\n[\s\S]*<hello:main>:[\s\S]*\tsyscall/);
     assert.doesNotMatch(await code(), /^#|objdump of the ELF|map identity/m);

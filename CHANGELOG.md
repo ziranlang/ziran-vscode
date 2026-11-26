@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Copy registered Windows host DLLs and their imported runtime DLLs beside
+  generated PE executables, so native GUI programs run under Wine.
+
+- Check C, Go and portable source with their own compiler targets. C and Go
+  dependency explorers no longer reuse portable window and frame-loop modules.
+
 - Name dependency files by their import paths in every target view, and resolve source declarations through the package map instead of assuming hashed package names.
 - Keep the project's own completion scope when its modules resolve through the map, and use native ELF sections to keep literals and metadata out of instruction listings.
 - **Open in window** on the Wasm platform runs the program's ZX in the page, in the frame the web preview uses, instead of in Node, which has no host for its capabilities: a canvas profile with `codegen = "zx"` (`wasm`, which a single-file preview's own project now has) builds Kryon's canvas player around the bundle, which lowers it to Wasm in the page and runs `main` with the page's canvas as its window. A project with no such profile names that.

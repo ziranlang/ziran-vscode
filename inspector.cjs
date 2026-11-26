@@ -605,7 +605,6 @@ class TargetInspector {
     const options = { hasMain, noMain, folders, platform };
     const pipeline = this.state.enabled.length ?
       startPipeline(command, file, path.join(work, 'pipeline'), paths, { ...options, targets: this.state.enabled }) : null;
-    pipeline?.catch(() => {});
     await Promise.all(this.state.enabled.map((target, index) =>
       buildTarget(command, target, file, work, paths, { ...options, pipeline }).then(async (result) => {
         if (generation !== this.generation) return;

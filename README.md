@@ -32,7 +32,9 @@ compile the checked ZIR directly (Source, ZIR, then **C**/**Go** with
 **Assembly** and **Binary**); WebAssembly and Native go through ZX (every
 stage, then **WAT** and **Binary**, or **Assembly** and **Binary**).
 `TARGET_STAGES` in `targets.cjs` is the one table behind both the tabs and the
-commands each build runs. Source and ZIR list the program's own modules first,
+commands each build runs. C and Go check their own target-specific ZIR;
+WebAssembly and Native share the portable frontend. Source and ZIR therefore
+show the dependencies selected for that code generator. They list the program's own modules first,
 then its dependencies, read only when picked from the file dropdown above the
 code. Ziran source is colored with this extension's grammar; the other tabs use
 light highlighting in the editor's theme.
@@ -57,7 +59,8 @@ Native's output changes:
 - **Linux x86-64**: an ELF, run directly.
 - **Windows x86-64**: a PE `.exe` (`zx2native --platform windows`), run under
   Wine with a private `WINEPREFIX` in the extension's storage and
-  `WINEDEBUG=-all`.
+  `WINEDEBUG=-all`. Imported DLLs are copied from registered host libraries
+  and their sibling runtime DLLs, recursively, beside the executable.
 - **Linux or Android AArch64 and ARMv7**: an ELF, run on an attached device
   through adb. `ziran.adbCommands` lists how to reach adb, such as `adb` or
   `ssh user@host adb`; the first device whose primary Android ABI matches runs
@@ -160,8 +163,10 @@ lowers it for the selected platform as the **Binary** tab does and runs that,
 in one process; opening it again replaces that process, and closing the
 preview ends it. On Linux x86-64 the executable links its host capabilities,
 such as Kryon's window, from the host libraries registered beside the ZX
-players (`make install-user` in Kryon registers its desktop library). On the
-Wasm platform it runs the program's ZX in the page instead: a canvas profile
+players (`make install-user` in Kryon registers its desktop library). For
+Windows, Kryon's `make install-windows-host` builds and registers
+the Windows DLL; the Linux library cannot supply a PE's host capabilities.
+On the Wasm platform it runs the program's ZX in the page instead: a canvas profile
 with `codegen = "zx"` (`wasm` in a single-file preview's own project) builds
 Kryon's canvas player around the bundle, which lowers it to Wasm in the page
 and runs its `main` with the page's canvas as its window. There is no fallback

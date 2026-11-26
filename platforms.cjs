@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { runCommand, safeEnvironment } = require('./preview.cjs');
+const { deployPeLibraries } = require('./native-hosts.cjs');
 
 const ARCH_LABELS = { x86_64: 'x86-64', aarch64: 'AArch64', armv7: 'ARMv7', wasm32: 'Wasm' };
 const OS_LABELS = { linux: 'Linux', android: 'Android', windows: 'Windows', macos: 'macOS' };
@@ -122,6 +123,10 @@ async function platformArtifact(platform, zx, directory, name, tools, run = runC
   const built = await run(tool, args, directory);
   if (built.code !== 0) {
     return { problem: (built.stderr || built.stdout || '').trim() || `${path.basename(tool)} exited with ${built.code}` };
+  }
+  if (platform.format === 'pe') {
+    try { await deployPeLibraries(file); }
+    catch (error) { return { problem: `Could not deploy Windows host libraries: ${error.message}` }; }
   }
   return { file };
 }
