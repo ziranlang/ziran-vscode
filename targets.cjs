@@ -726,8 +726,9 @@ async function projectModuleMap(context) {
 
 // The map's records, keyed the way the checked build names modules: the
 // project's own modules plainly (`geometry`), others prefixed (`std_math`,
-// `kryon__geometry`), plus their import spellings for the file dropdown.
-function moduleMap(text) {
+// `kryon__geometry`), plus their package paths for the file tree. Root names in the compiler map
+// identify the current checkout, which can itself be a library package.
+function moduleMap(text, rootPackage) {
   const sources = new Map();
   const imports = new Map();
   const labels = new Map();
@@ -736,7 +737,8 @@ function moduleMap(text) {
     if (fields[0] === 'M' && fields.length >= 4) {
       const name = fields[1] === 'root' ? fields[2] : `${fields[1]}${fields[1] === 'std' ? '_' : '__'}${fields[2]}`;
       sources.set(name, fields[3]);
-      labels.set(name, fields[1] === 'root' ? fields[2] : `${fields[1]}/${fields[2]}`);
+      const owner = fields[1] === 'root' ? rootPackage : fields[1];
+      if (owner) labels.set(name, `${owner}/${fields[2]}`);
     } else if (fields[0] === 'D' && fields.length >= 5 && fields[1] === 'root' && !imports.has(fields[2])) {
       imports.set(fields[2], fields[3] === 'root' ? fields[4] : `${fields[3]}${fields[3] === 'std' ? '_' : '__'}${fields[4]}`);
     }
@@ -795,7 +797,7 @@ async function importedTargets(file, own) {
 async function sourceView(context, names) {
   const { file } = context;
   const own = await ownModules(file);
-  const map = moduleMap(await projectModuleMap(context) || '');
+  const map = moduleMap(await projectModuleMap(context) || '', context.packageName);
   const roots = await sourceRoots(context);
   const files = [{ name: path.basename(file), text: await readText(file) }];
   const dependencies = [];
@@ -983,7 +985,8 @@ async function targetContext(command, file, output, paths, options = {}) {
   }
   const noMain = options.noMain || noMainMessage(file, hasMain ? [] : await importingPrograms(file));
   return { command, file, output, paths, project: Boolean(project),
-    cwd: project || path.dirname(file), hasMain, noMain, folders: options.folders || [] };
+    cwd: project || path.dirname(file), packageName: project && (await readManifest(project))?.package?.name,
+    hasMain, noMain, folders: options.folders || [] };
 }
 
 // C, Go and portable code freeze different compile-time branches into ZIR.
@@ -1018,7 +1021,7 @@ async function buildTarget(command, target, file, workDirectory, paths, options 
   try {
     const builder = BUILDERS[target];
     const result = builder ? await builder(context) : await buildSource(context, target);
-    const names = moduleMap(await projectModuleMap(context) || '');
+    const names = moduleMap(await projectModuleMap(context) || '', context.packageName);
     // The table, not the builder, decides the tabs and their order.
     const order = stagesOf(target, target === 'native' ? options.platform : null);
     const views = order.map(([id, label]) => {

@@ -253,7 +253,7 @@ test('a Kryon program gets every target with an entry file and lazy shared code'
       assert.ok(own.every(name => name.startsWith('window.')), `${target}: ${own}`);
       assert.match(files[0].text, /main/);
       assert.ok(files.some(item => item.dependency && (target === 'c'
-        ? item.name === 'window_dependencies.c' : item.name.startsWith('kryon/app'))),
+        ? item.name.startsWith('kryon/') : item.name.startsWith('kryon/app'))),
       `${target} lists its shared implementation`);
       assert.ok(files.filter(item => item.dependency).every(item => item.text === undefined));
       const ownBytes = files.filter(item => !item.dependency).reduce((sum, item) => sum + item.text.length, 0);
@@ -372,12 +372,17 @@ for (const program of [kryonHello, kryonWindow]) {
         assert.ok(dependencies.length > 0, `${id} lists dependencies for the file dropdown`);
         assert.ok(dependencies.every(item => item.text === undefined && typeof item.load === 'function'));
       }
-      // Source and ZIR use the same import paths for dependency dropdowns.
+      // Source and ZIR use the same import paths for the package tree.
       const sourceFiles = results.c.views.find(item => item.id === 'source').files;
       const sourceNames = new Set(sourceFiles.map(item => item.name));
       for (const name of results.c.views.find(item => item.id === 'zir').files
         .filter(item => item.dependency).map(item => item.name))
         assert.ok(sourceNames.has(`${name.replace(/\.zir$/, '')}.zi`), `${name} has a Source entry`);
+      for (const id of ['source', 'zir']) {
+        for (const file of view(results.c, id).files.filter(item => item.dependency)) {
+          assert.ok(file.name.startsWith('kryon/') || file.name.startsWith('std/'), file.name);
+        }
+      }
       assert.match(await sourceFiles.find(item => item.dependency).load(), /\S/);
     } finally { observeCommands(null); await fs.rm(work, { recursive: true, force: true }); }
   });

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Group internal module files under their owning package, including examples opened inside a library checkout.
+
 - Browse every target’s files in a keyboard-accessible tree, with Project and
   Packages folders, instead of separate dependency and own-code dropdowns.
 
