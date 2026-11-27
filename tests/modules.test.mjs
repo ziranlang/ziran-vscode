@@ -74,7 +74,13 @@ test('NAME=DIR paths serve package-qualified imports outside a project', async (
   const paths = ['/std', 'kryon=/work/kryon/src', 'kryon=/work/kryon/src/ui'];
   assert.deepEqual(packageCandidates('kryon/text', paths), [
     '/work/kryon/src/text.zi', '/work/kryon/src/text/module.zi',
-    '/work/kryon/src/ui/text.zi', '/work/kryon/src/ui/text/module.zi']);
+    '/work/kryon/src/text.ts', '/work/kryon/src/text/module.ts',
+    '/work/kryon/src/text.tsx', '/work/kryon/src/text/module.tsx',
+    '/work/kryon/src/text.zir', '/work/kryon/src/text/module.zir',
+    '/work/kryon/src/ui/text.zi', '/work/kryon/src/ui/text/module.zi',
+    '/work/kryon/src/ui/text.ts', '/work/kryon/src/ui/text/module.ts',
+    '/work/kryon/src/ui/text.tsx', '/work/kryon/src/ui/text/module.tsx',
+    '/work/kryon/src/ui/text.zir', '/work/kryon/src/ui/text/module.zir']);
   assert.deepEqual(packageCandidates('plot/Plot', paths), []);
   assert.deepEqual(packageCandidates('kryon/../secret', paths), []);
   assert.deepEqual(packageModuleIds(['/work/kryon/src/text.zi', '/work/kryon/src/ui/button/module.zi',

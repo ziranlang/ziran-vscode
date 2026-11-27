@@ -5,7 +5,8 @@ const { createHash, randomBytes } = require('node:crypto');
 const { previewLocation, projectRoot, safeEnvironment } = require('./preview.cjs');
 const { bundleArgs, importingPrograms, mainLine, modulePaths, noMainMessage, packageRoot,
   ziranCommand, ziranTool } = require('./targets.cjs');
-const moduleName = (file) => path.basename(file, '.zi');
+const { sourceStem: moduleName } = require('./module-index.cjs');
+const nativeSource = file => /\.(zi|tsx?)$/.test(file);
 const { INSPECTOR_MARKUP, INSPECTOR_SCRIPT, INSPECTOR_STYLE, TargetInspector } = require('./inspector.cjs');
 const { platformArtifact, runRoute } = require('./platforms.cjs');
 
@@ -129,7 +130,7 @@ class RunPreview {
       this.panel.onDidDispose(() => this.dispose()),
       this.panel.webview.onDidReceiveMessage((message) => this.message(message)),
       vscode.workspace.onDidSaveTextDocument((document) => {
-        if (document.uri.fsPath.endsWith('.zi') &&
+        if (nativeSource(document.uri.fsPath) &&
             path.dirname(document.uri.fsPath) === path.dirname(this.file)) this.schedule();
       }),
       vscode.workspace.onDidChangeConfiguration((event) => {
@@ -267,7 +268,7 @@ function activateRun(context, vscode) {
   /* One Run pane, showing whichever .zi file has focus. */
   let pane = null;
   const isZiran = (document) => document?.uri.scheme === 'file' &&
-    document.uri.fsPath.endsWith('.zi');
+    nativeSource(document.uri.fsPath);
   const openPane = (file) => {
     if (pane) {
       pane.retarget(file);
@@ -283,8 +284,9 @@ function activateRun(context, vscode) {
     vscode.commands.registerCommand('ziran.run', async (uri) => {
       const document = uri ? await vscode.workspace.openTextDocument(uri) :
         vscode.window.activeTextEditor?.document;
-      if (!document || !document.uri.fsPath.endsWith('.zi')) {
-        vscode.window.showErrorMessage('Open a .zi file to run it.');
+      if (!document || !nativeSource(document.uri.fsPath) ||
+          (!document.uri.fsPath.endsWith('.zi') && !await packageRoot(document.uri.fsPath))) {
+        vscode.window.showErrorMessage('Open a Ziran .zi or native .ts/.tsx file to run it.');
         return;
       }
       if (document.isDirty) await document.save();
@@ -297,10 +299,14 @@ function activateRun(context, vscode) {
       openPane(file);
     }),
     vscode.window.onDidChangeActiveTextEditor((editor) => {
-      if (pane && isZiran(editor?.document)) pane.retarget(editor.document.uri.fsPath);
+      if (pane && isZiran(editor?.document)) {
+        const file = editor.document.uri.fsPath;
+        packageRoot(file).then(root => { if (root || file.endsWith('.zi')) pane?.retarget(file); });
+      }
     }),
-    vscode.languages.registerCodeLensProvider({ language: 'ziran', scheme: 'file' }, {
+    vscode.languages.registerCodeLensProvider(['ziran', 'typescript', 'typescriptreact'].map(language => ({ language, scheme: 'file' })), {
       async provideCodeLenses(document) {
+        if (!document.uri.fsPath.endsWith('.zi') && !await packageRoot(document.uri.fsPath)) return [];
         const line = mainLine(document.getText());
         if (line < 0 || await projectRoot(document.uri.fsPath)) return [];
         return [new vscode.CodeLens(new vscode.Range(line, 0, line, 0), {

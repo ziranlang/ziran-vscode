@@ -1,6 +1,8 @@
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { sourceStem } = require('./module-index.cjs');
+const nativeSource = file => /\.(zi|tsx?)$/.test(file || '');
 const { spawn } = require('node:child_process');
 const { parse } = require('@iarna/toml');
 const { createHash, randomBytes } = require('node:crypto');
@@ -68,16 +70,17 @@ async function manifestRoot(start) {
 }
 
 async function isKryonProgram(file) {
-  if (!file?.endsWith('.zi')) return false;
+  if (!nativeSource(file)) return false;
   let source;
   try { source = await fs.readFile(file, 'utf8'); } catch { return false; }
-  return /^[ \t]*(?:[A-Za-z_]\w*[ \t]*::[ \t]*)?#import[ \t]+"kryon\/app"/m.test(source) &&
-    /^main\s*::\s*\(/m.test(source);
+  const { mainLine } = require('./targets.cjs');
+  return (/#import\s+["']kryon\/app["']/.test(source) || /\bfrom\s*["']kryon\/app["']/.test(source)) &&
+    mainLine(source) >= 0;
 }
 
 async function previewLocation(start) {
   const root = await projectRoot(start);
-  if (root) return { key: root, root, source: start.endsWith?.('.zi') ? start : '', standalone: false };
+  if (root) return { key: root, root, source: nativeSource(start) ? start : '', standalone: false };
   if (await isKryonProgram(start)) {
     return { key: start, root: null, source: start, standalone: true };
   }
@@ -118,7 +121,7 @@ async function prepareStandalonePreview(file, storage, vscode) {
     throw new Error('Kryon single-file preview could not resolve the kryon package and Ziran toolchain.');
   }
   const entry = path.basename(file);
-  const name = path.basename(file, '.zi').replace(/[^A-Za-z0-9_-]/g, '-') || 'preview';
+  const name = sourceStem(file).replace(/[^A-Za-z0-9_-]/g, '-') || 'preview';
   const manifest = `[package]\nname = "${name}"\nentry = "src/${entry}"\nmodule_roots = ["src"]\ntool = "kryon"\n\n` +
     `[toolchain]\ngit = "https://github.com/ziranlang/ziran.git"\nref = "master"\n\n` +
     `[dependencies.kryon]\ngit = "https://github.com/kryonlabs/kryon.git"\nref = "master"\n\n` +
@@ -208,7 +211,7 @@ function previewInput(root, file) {
   const parts = relative.split(path.sep);
   if (!relative || path.isAbsolute(relative) || parts.includes('..') ||
       parts.some((part) => ['build', 'node_modules', '.git', '.ziran'].includes(part))) return false;
-  return file.endsWith('.zi') || ['kryon.toml', 'ziran.toml', 'ziran.local.toml', 'ziran.lock'].includes(path.basename(file));
+  return nativeSource(file) || ['kryon.toml', 'ziran.toml', 'ziran.local.toml', 'ziran.lock'].includes(path.basename(file));
 }
 
 function previewHtml(nonce) {
@@ -307,7 +310,7 @@ class Preview {
     this.windowQueue = Promise.resolve();
     this.inspecting = false;
     this.reinspect = false;
-    const title = this.source ? path.basename(this.source, '.zi') : path.basename(this.root);
+    const title = this.source ? sourceStem(this.source) : path.basename(this.root);
     this.state = {
       type: 'state', project: title, status: 'Starting…', output: '', html: '', inspectable: false,
       // A single-file program owns main, so it can also run in its own window.
@@ -348,7 +351,7 @@ class Preview {
     const target = this.location.standalone ? path.dirname(this.source) : this.root;
     this.watchRoot = vscode.workspace.getWorkspaceFolder?.(vscode.Uri.file(target))?.uri.fsPath || target;
     this.watchers = [];
-    for (const pattern of ['**/*.zi', '**/kryon.toml', '**/ziran{,.local}.toml', '**/ziran.lock']) {
+    for (const pattern of ['**/*.{zi,ts,tsx}', '**/kryon.toml', '**/ziran{,.local}.toml', '**/ziran.lock']) {
       const watcher = vscode.workspace.createFileSystemWatcher(
         new vscode.RelativePattern(vscode.Uri.file(this.watchRoot), pattern));
       const changed = (uri) => { if (previewInput(this.watchRoot, uri.fsPath)) this.schedule(); };
@@ -373,7 +376,7 @@ class Preview {
       Object.assign(this.state, { html: '', windowStatus: '', windowOutput: '', windowBuilding: false });
       this.watch();
     }
-    const title = path.basename(this.source, '.zi');
+    const title = sourceStem(this.source);
     this.panel.title = `Preview: ${title}`;
     this.state.project = title;
     this.schedule();
@@ -446,13 +449,13 @@ class Preview {
     const output = path.join(this.storage, 'window-zx', key);
     await fs.rm(output, { recursive: true, force: true });
     await fs.mkdir(output, { recursive: true });
-    const bundle = path.join(output, `${path.basename(this.source, '.zi')}.zx`);
+    const bundle = path.join(output, `${sourceStem(this.source)}.zx`);
     const built = await runCommand(command, bundleArgs(this.source, paths, bundle, Boolean(project)), cwd);
     if (this.disposed) return;
     if (built.code !== 0 || !(await exists(bundle))) {
       return failed(built.code === 0 ? 'The ZX build wrote no bundle' : 'ZX build failed', (built.stderr || built.stdout).trim());
     }
-    const artifact = await platformArtifact(platform, bundle, output, path.basename(this.source, '.zi'), tools);
+    const artifact = await platformArtifact(platform, bundle, output, sourceStem(this.source), tools);
     if (this.disposed) return;
     if (artifact.problem) return failed(`No ${platform.label} build`, artifact.problem);
     const adbCommands = this.vscode.workspace.getConfiguration('ziran', this.vscode.Uri.file(this.source))
@@ -601,7 +604,7 @@ function activatePreview(context, vscode) {
   // A preview follows the active .zi editor; other editors leave it alone.
   const followEditor = async (editor) => {
     const file = editor?.document.uri.scheme === 'file' ? editor.document.uri.fsPath : '';
-    if (!file.endsWith('.zi')) return;
+    if (!nativeSource(file)) return;
     const location = await previewLocation(file);
     if (!location) return;
     for (const [key, preview] of previews) {
@@ -617,7 +620,7 @@ function activatePreview(context, vscode) {
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor((editor) => { updateRunButton(); void followEditor(editor); }),
     vscode.workspace.onDidChangeWorkspaceFolders(updateRunButton),
-    vscode.languages.registerCodeLensProvider({ language: 'ziran', scheme: 'file' }, {
+    vscode.languages.registerCodeLensProvider(['ziran', 'typescript', 'typescriptreact'].map(language => ({ language, scheme: 'file' })), {
       async provideCodeLenses(document) {
         if (!(await previewLocation(document.uri.fsPath))) return [];
         return [new vscode.CodeLens(new vscode.Range(0, 0, 0, 0), {
@@ -641,7 +644,7 @@ function activatePreview(context, vscode) {
       if (found) { location = found; break; }
     }
     if (!location) {
-      vscode.window.showErrorMessage('Open a Kryon app or a .zi program importing kryon/app to preview it.');
+      vscode.window.showErrorMessage('Open a Kryon app or native program importing kryon/app to preview it.');
       return;
     }
     if (previews.has(location.key)) { previews.get(location.key).reveal(); return; }

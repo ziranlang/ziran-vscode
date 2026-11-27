@@ -1,8 +1,14 @@
 # Ziran Language for VS Code
 
-Editor support for Ziran `.zi` source: syntax highlighting, brackets, comments,
-import completion, and Go to Definition for extensionless `#import "module"`
-statements. Modules are discovered from `.zi` and `.zir` files in the open
+Editor support for the Ziran pipeline: `.zi` source with syntax highlighting,
+brackets, comments, snippets, import completion, and Go to Definition for
+extensionless `#import "module"` statements; `.zir` and `.zx` build artifacts
+through inspected binary editors (`ziran inspect`, never fake text syntax); and
+TypeScript/TSX native sources inside a Ziran package, which keep VS Code's
+built-in TypeScript language and highlighting while the Ziran compiler checks
+and runs them — the compiler's own diagnostics stay the source of truth, with
+no TypeScript declaration shim standing in for checked native types. Modules
+are discovered from `.zi`, `.ts`, `.tsx` and `.zir` files in the open
 workspace, plus a sibling `ziran/std` directory, so a Kryon workspace can import
 the standard modules without listing them. A single `.zi` file works without a
 folder: its own directory and the Ziran checkout's `std` are searched.
@@ -18,7 +24,7 @@ it does not bundle Kryon widgets.
 ## Run pane
 
 Click ▶ in the editor title bar, or **▶ Run** above `main`, to open the **Run**
-pane beside a `.zi` file. It shows the program's output in a window, with the
+pane beside a `.zi`, `.ts` or `.tsx` file. It shows the program's output in a window, with the
 run time and any build or runtime errors below it (a run stops after 10
 seconds), and **Targets**: one tab per target (C, Go, WebAssembly and Native),
 with syntax highlighting and a file tree; the checkboxes choose the targets

@@ -2,7 +2,7 @@
   "name": "ziran-language",
   "displayName": "Ziran Language",
   "description": "Ziran language support, generated code preview for every target, and Kryon project preview",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "publisher": "kryonlabs",
   "license": "MIT",
   "icon": "icons/extension.png",
@@ -19,10 +19,13 @@
   "main": "./extension.cjs",
   "activationEvents": [
     "onLanguage:ziran",
+    "onLanguage:typescript",
+    "onLanguage:typescriptreact",
     "onCommand:kryon.preview",
     "onCommand:ziran.run",
     "workspaceContains:kryon.toml",
     "onCustomEditor:ziran.zirViewer",
+    "onCustomEditor:ziran.zxViewer",
     "workspaceContains:ziran.toml"
   ],
   "contributes": {
@@ -36,6 +39,31 @@
           }
         ],
         "priority": "default"
+      }
+      ,
+      {
+        "viewType": "ziran.zxViewer",
+        "displayName": "Ziran ZX Bundle",
+        "selector": [
+          {
+            "filenamePattern": "*.zx"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "ziran",
+        "path": "./snippets/ziran.json"
+      },
+      {
+        "language": "typescript",
+        "path": "./snippets/native.json"
+      },
+      {
+        "language": "typescriptreact",
+        "path": "./snippets/native.json"
       }
     ],
     "commands": [
@@ -54,12 +82,12 @@
       "editor/title": [
         {
           "command": "ziran.run",
-          "when": "resourceExtname == .zi && !ziran.kryonProject",
+          "when": "(resourceExtname == .zi || ((resourceExtname == .ts || resourceExtname == .tsx) && ziran.pipelineSource)) && !ziran.kryonProject",
           "group": "navigation@0"
         },
         {
           "command": "kryon.preview",
-          "when": "resourceExtname == .zi && ziran.kryonProject",
+          "when": "(resourceExtname == .zi || ((resourceExtname == .ts || resourceExtname == .tsx) && ziran.pipelineSource)) && ziran.kryonProject",
           "group": "navigation@2"
         }
       ],

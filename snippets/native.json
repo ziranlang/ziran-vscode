@@ -1,0 +1,30 @@
+{
+	"Native main (s32)": {
+		"prefix": "zmain",
+		"body": [
+			"export function main(): s32 {",
+			"\treturn s32(0);",
+			"}"
+		],
+		"description": "Native program entry checked by the Ziran compiler"
+	},
+	"Native function (s32)": {
+		"prefix": "zfn",
+		"body": [
+			"export function ${1:name}(): s32 {",
+			"\t$0",
+			"}"
+		],
+		"description": "Exported native procedure checked by the Ziran compiler"
+	},
+	"s32 cast": {
+		"prefix": "zs32",
+		"body": "s32(${1:value})",
+		"description": "Convert to the 32-bit signed native scalar"
+	},
+	"s64 cast": {
+		"prefix": "zs64",
+		"body": "s64(${1:value})",
+		"description": "Convert to the 64-bit signed native scalar"
+	}
+}

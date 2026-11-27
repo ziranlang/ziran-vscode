@@ -34,27 +34,36 @@ const classOf = (scopes) => {
 };
 const escapeHtml = (text) => text.replace(/[&<>]/g, (c) => c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;');
 
-let loading = null;
-function loadGrammar() {
-  loading ||= (async () => {
+const loading = new Map();
+function loadGrammar(scope = 'source.ziran') {
+  if (!loading.has(scope)) loading.set(scope, (async () => {
     await oniguruma.loadWASM(readFileSync(require.resolve('vscode-oniguruma/release/onig.wasm')));
-    return new textmate.Registry({
+    const registry = new textmate.Registry({
       onigLib: Promise.resolve({
-        createOnigScanner: (sources) => new oniguruma.OnigScanner(sources),
-        createOnigString: (source) => new oniguruma.OnigString(source),
+        createOnigScanner: sources => new oniguruma.OnigScanner(sources),
+        createOnigString: source => new oniguruma.OnigString(source),
       }),
-      loadGrammar: async (scope) => scope === 'source.ziran' ? textmate.parseRawGrammar(
-        readFileSync(path.join(__dirname, 'syntaxes', 'ziran.tmLanguage.json'), 'utf8'),
-        'ziran.tmLanguage.json') : null,
-    }).loadGrammar('source.ziran');
-  })();
-  return loading;
+      loadGrammar: async name => {
+        let file;
+        if (name === 'source.ziran') file = path.join(__dirname, 'syntaxes', 'ziran.tmLanguage.json');
+        else if (['source.ts', 'source.tsx'].includes(name)) {
+          // Reuse the editor's shipped TypeScript grammar in pipeline tabs.
+          const { env } = require('vscode');
+          file = path.join(env.appRoot, 'extensions', 'typescript-basics', 'syntaxes',
+            name === 'source.tsx' ? 'TypeScriptReact.tmLanguage.json' : 'TypeScript.tmLanguage.json');
+        } else return null;
+        return textmate.parseRawGrammar(readFileSync(file, 'utf8'), file);
+      },
+    });
+    return registry.loadGrammar(scope);
+  })());
+  return loading.get(scope);
 }
 
 // TEXT as HTML with tok-* spans, or null when the grammar cannot load.
-async function highlightZiran(text) {
+async function highlightZiran(text, scope = 'source.ziran') {
   let grammar;
-  try { grammar = await loadGrammar(); } catch { loading = null; return null; }
+  try { grammar = await loadGrammar(scope); } catch { loading.delete(scope); return null; }
   if (!grammar) return null;
   let stack = null;
   const lines = text.split('\n').map((line) => {
@@ -76,8 +85,8 @@ async function highlightZiran(text) {
 // A file's highlighted HTML when it is Ziran source worth highlighting.
 const HIGHLIGHT_LIMIT = 400000;
 async function highlightedFile(name, text) {
-  return /\.zi$/.test(name) && typeof text === 'string' && text.length <= HIGHLIGHT_LIMIT ?
-    highlightZiran(text) : null;
+  const scope = /\.zi$/.test(name) ? 'source.ziran' : /\.tsx$/.test(name) ? 'source.tsx' : /\.ts$/.test(name) ? 'source.ts' : null;
+  return scope && typeof text === 'string' && text.length <= HIGHLIGHT_LIMIT ? highlightZiran(text, scope) : null;
 }
 
 module.exports = { highlightZiran, highlightedFile };

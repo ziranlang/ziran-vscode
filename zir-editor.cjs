@@ -1,11 +1,31 @@
 const path = require('node:path');
+const fs = require('node:fs/promises');
 const { randomBytes } = require('node:crypto');
 const { runCommand } = require('./preview.cjs');
 const { ziranCommand } = require('./targets.cjs');
 
 async function inspectZir(file, mode, vscode) {
+  if (mode === 'hex' && file.endsWith('.zx')) {
+    let handle;
+    try { handle = await fs.open(file, 'r'); }
+    catch (error) { return `Could not inspect ${file}\n${error.message}`; }
+    try {
+      const size = (await handle.stat()).size;
+      const buffer = Buffer.alloc(Math.min(size, 256 * 1024));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      const lines = [];
+      for (let at = 0; at < bytesRead; at += 16) {
+        const bytes = buffer.subarray(at, Math.min(at + 16, bytesRead));
+        const hex = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join(' ');
+        const ascii = [...bytes].map(byte => byte >= 32 && byte < 127 ? String.fromCharCode(byte) : '.').join('');
+        lines.push(`${at.toString(16).padStart(8, '0')}  ${hex.padEnd(47)}  ${ascii}`);
+      }
+      if (size > bytesRead) lines.push(`Showing first ${bytesRead} of ${size} bytes.`);
+      return lines.join('\n');
+    } finally { await handle.close(); }
+  }
   const command = await ziranCommand(file, vscode);
-  const args = mode === 'hex' ? ['inspect', '--hex', file] : ['inspect', file];
+  const args = mode === 'hex' ? ['inspect', '--hex', file] : file.endsWith('.zx') ? ['inspect', '--emit', 'lir', file] : ['inspect', file];
   const result = await runCommand(command, args, path.dirname(file));
   return result.code === 0 ? result.stdout :
     `Could not inspect ${file}\n${result.stderr || result.stdout}`;
@@ -15,7 +35,7 @@ function outlineEntries(source) {
   const entries = [];
   const lines = source.split(/\r?\n/);
   for (let line = 0; line < lines.length; line++) {
-    const match = lines[line].match(/^  (function|type|global|constant)\s+([^\s(:]+)/);
+    const match = lines[line].match(/^\s*(function|type|global|constant)\s+([^\s(:@]+)/);
     if (match) entries.push({ kind: match[1], name: match[2], line });
   }
   return entries;
@@ -108,7 +128,7 @@ function activateZirEditor(context, vscode) {
       if (uri.path === changed.fsPath) changes.fire(uri);
     }
   };
-  const virtualWatcher = vscode.workspace.createFileSystemWatcher('**/*.zir');
+  const virtualWatcher = vscode.workspace.createFileSystemWatcher('**/*.{zir,zx}');
   context.subscriptions.push(virtualWatcher,
     virtualWatcher.onDidCreate(refreshVirtualDocuments),
     virtualWatcher.onDidChange(refreshVirtualDocuments),
@@ -131,8 +151,9 @@ function activateZirEditor(context, vscode) {
         });
       },
     }));
-  context.subscriptions.push(vscode.window.registerCustomEditorProvider(
-    'ziran.zirViewer', {
+  for (const viewType of ['ziran.zirViewer', 'ziran.zxViewer']) {
+    context.subscriptions.push(vscode.window.registerCustomEditorProvider(
+    viewType, {
       openCustomDocument(uri) { return { uri, dispose() {} }; },
       async resolveCustomEditor(document, panel) {
         const file = document.uri.fsPath;
@@ -175,6 +196,7 @@ function activateZirEditor(context, vscode) {
       },
     }, { supportsMultipleEditorsPerDocument: true,
       webviewOptions: { enableScripts: true } }));
+  }
 }
 
 module.exports = { activateZirEditor, editorHtml, inspectZir, outlineEntries };

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Treat TypeScript and TSX native sources inside a Ziran package as pipeline
+  files: the Run button and Kryon preview follow them like `.zi`, rebuilds
+  watch them, module discovery and snippets cover them, and the Ziran compiler
+  checks them with its own diagnostics — the built-in TypeScript language
+  keeps its highlighting, with no declaration shim hiding real type errors.
+
+- Read compiler diagnostics in the toolchain's current JSON schema, so type
+  errors, related declarations and quick fixes reach the Problems panel again;
+  a failed check surfaces as a visible error instead of clearing silently.
+
+- Open `.zx` bundles in a dedicated inspected editor beside the `.zir` one,
+  with Ziran and native TSX snippet suggestions.
+
 - Group internal module files under their owning package, including examples opened inside a library checkout.
 
 - Browse every target’s files in a keyboard-accessible tree, with Project and

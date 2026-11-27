@@ -6,7 +6,7 @@ const { spawn } = require('node:child_process');
 const { parse } = require('@iarna/toml');
 const { manifestPath, projectRoot, runCommand: spawnCommand, safeEnvironment } = require('./preview.cjs');
 const { binaryListing } = require('./disassembly.cjs');
-const { moduleSource } = require('./module-index.cjs');
+const { moduleSource, sourceStem } = require('./module-index.cjs');
 const { DEFAULT_PLATFORM, platformArtifact, platformList, platformStages, selectedPlatform } = require('./platforms.cjs');
 
 const TARGETS = [
@@ -148,8 +148,10 @@ function commandStd(command) {
 // or `Text :: #import "kryon/text";`. The standard library is not a package.
 function importedPackages(source) {
   const names = new Set();
-  const pattern = /^[ \t]*(?:using[ \t]+)?(?:[A-Za-z_]\w*[ \t]*::[ \t]*)?#import[ \t]+"([A-Za-z_][\w-]*)\/[^"]+"/gm;
-  for (const match of source.matchAll(pattern)) if (match[1] !== 'std') names.add(match[1]);
+  for (const target of importedModules(source)) {
+    const name = target.split('/')[0];
+    if (target.includes('/') && name !== 'std') names.add(name);
+  }
   return names;
 }
 
@@ -221,7 +223,7 @@ async function packageModulePaths(file, vscode) {
   const names = new Set();
   let entries = [];
   try { entries = await fs.readdir(directory); } catch {}
-  for (const entry of entries.filter((name) => name.endsWith('.zi'))) {
+  for (const entry of entries.filter((name) => /\.(zi|tsx?)$/.test(name))) {
     try {
       for (const name of importedPackages(await fs.readFile(path.join(directory, entry), 'utf8'))) {
         names.add(name);
@@ -290,7 +292,7 @@ function configuredPlatform(file, vscode) {
 }
 
 function moduleName(file) {
-  return path.basename(file, '.zi');
+  return sourceStem(file);
 }
 
 // The program's own modules: the file's module and the .zi modules beside it.
@@ -300,7 +302,7 @@ async function ownModules(file) {
   const names = new Set([moduleName(file)]);
   try {
     for (const entry of await fs.readdir(path.dirname(file))) {
-      if (entry.endsWith('.zi')) names.add(entry.slice(0, -3));
+      if (/\.(zi|tsx?)$/.test(entry)) names.add(sourceStem(entry));
     }
   } catch {}
   return names;
@@ -330,7 +332,7 @@ function dependencyFile(name, load, size) {
 // through its main; a file without one is a module for programs to import.
 function mainLine(source) {
   const lines = source.split(/\r?\n/);
-  return lines.findIndex((line) => /^main\s*::\s*\(/.test(line));
+  return lines.findIndex((line) => /^main\s*::\s*\(/.test(line) || /^\s*(?:export\s+)?function\s+main\s*\(/.test(line));
 }
 
 function escapeRegExp(text) {
@@ -342,14 +344,12 @@ async function importingPrograms(file) {
   const directory = path.dirname(file);
   let entries = [];
   try { entries = await fs.readdir(directory); } catch { return []; }
-  const importer = new RegExp(
-    `^[ \\t]*(?:using[ \\t]+)?(?:[A-Za-z_]\\w*[ \\t]*::[ \\t]*)?#import[ \\t]+"(?:[^"/]+/)*${escapeRegExp(moduleName(file))}"`, 'm');
   const found = [];
   for (const entry of entries.sort()) {
-    if (!entry.endsWith('.zi') || entry === path.basename(file)) continue;
+    if (!/\.(zi|tsx?)$/.test(entry) || entry === path.basename(file)) continue;
     try {
       const source = await fs.readFile(path.join(directory, entry), 'utf8');
-      if (mainLine(source) >= 0 && importer.test(source)) found.push(entry);
+      if (mainLine(source) >= 0 && importedModules(source).some(target => target.split('/').pop() === moduleName(file))) found.push(entry);
     } catch {}
   }
   return found;
@@ -702,13 +702,19 @@ async function sourceRoots(context) {
   return [...new Set(roots)];
 }
 
-// The source behind a checked module's name: `std_math` is std/math.zi.
+// Resolve the real frontend suffix, including native TS/TSX modules.
+async function ownSource(file, module) {
+  for (const suffix of ['.zi', '.ts', '.tsx']) {
+    const candidate = path.join(path.dirname(file), module + suffix);
+    if (await exists(candidate)) return candidate;
+  }
+  return null;
+}
 async function findSource(module, roots) {
-  const std = module.startsWith('std_');
   for (const root of roots) {
-    const candidate = std ? (path.basename(root) === 'std' ? path.join(root, `${module.slice(4)}.zi`) : '') :
-      path.join(root, `${module}.zi`);
-    if (candidate && await exists(candidate)) return { path: candidate, name: std ? `std/${module.slice(4)}.zi` : `${module}.zi` };
+    const stem = module.startsWith('std_') && path.basename(root) === 'std' ? module.slice(4) : module;
+    const found = await ownSource(path.join(root, '_'), stem);
+    if (found) return { path: found };
   }
   return null;
 }
@@ -765,6 +771,9 @@ function importedModules(source) {
   const names = [];
   const pattern = /^[ \t]*(?:using[ \t]+)?(?:[A-Za-z_]\w*[ \t]*::[ \t]*)?#import[ \t]+"([^"]+)"/gm;
   for (const match of source.matchAll(pattern)) if (!names.includes(match[1])) names.push(match[1]);
+  for (const match of source.matchAll(/\bfrom\s*["']([^"']+)["']/g)) {
+    if (!names.includes(match[1])) names.push(match[1]);
+  }
   return names;
 }
 
@@ -773,7 +782,7 @@ function importedModules(source) {
 async function importedTargets(file, own) {
   const ownFound = [];
   const dependencies = [];
-  const queued = new Set([path.basename(file)]);
+  const queued = new Set([moduleName(file)]);
   const pending = [file];
   while (pending.length) {
     let source = '';
@@ -781,10 +790,11 @@ async function importedTargets(file, own) {
     for (const target of importedModules(source)) {
       const module = target.includes('/') ? '' : target;
       if (module && own.has(module)) {
-        if (!queued.has(`${module}.zi`)) {
-          queued.add(`${module}.zi`);
+        if (!queued.has(module)) {
+          queued.add(module);
           ownFound.push(module);
-          pending.push(path.join(path.dirname(file), `${module}.zi`));
+          const resolved = await ownSource(file, module);
+          if (resolved) pending.push(resolved);
         }
         continue;
       }
@@ -804,8 +814,10 @@ async function sourceView(context, names) {
   const listed = new Set([path.basename(file)]);
   const addOwn = async (module) => {
     try {
-      files.push({ name: `${module}.zi`, text: await readText(path.join(path.dirname(file), `${module}.zi`)) });
-      listed.add(`${module}.zi`);
+      const resolved = await ownSource(file, module);
+      if (!resolved) return;
+      files.push({ name: path.basename(resolved), text: await readText(resolved) });
+      listed.add(module);
     } catch {}
   };
   // The checked name behind a module name or an import's `std/text` text.
@@ -824,8 +836,8 @@ async function sourceView(context, names) {
   const addDependency = async (module) => {
     const resolved = await locate(module);
     if (!resolved) return;
-    let name = `${moduleLabel(module, map, context) || path.basename(resolved, '.zi')}.zi`;
-    if (listed.has(name)) name = `${module}.zi`;
+    let name = `${moduleLabel(module, map, context) || sourceStem(resolved)}${path.extname(resolved)}`;
+    if (listed.has(name)) name = `${module}${path.extname(resolved)}`;
     if (listed.has(name)) return;
     listed.add(name);
     let size;
@@ -838,7 +850,7 @@ async function sourceView(context, names) {
   const otherNames = (fallback ? fallback.dependencies.map(checkedName)
     : checked.filter((module) => !own.has(module))).sort();
   for (const module of ownNames) {
-    if (module !== moduleName(file) && !listed.has(`${module}.zi`)) await addOwn(module);
+    if (module !== moduleName(file) && !listed.has(module)) await addOwn(module);
   }
   for (const module of otherNames) await addDependency(module);
   return view('source', 'Source', [...files, ...dependencies]);

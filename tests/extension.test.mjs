@@ -81,3 +81,25 @@ test('.zi, .zir, and .zx files and the extension itself have icons', () => {
     assert.ok(exists(language.icon.light) && exists(language.icon.dark));
   }
 });
+
+test('pipeline files keep their real editors, grammars and snippets', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const editors = new Map(manifest.contributes.customEditors.map((entry) => [entry.viewType, entry]));
+  for (const [viewType, pattern] of [['ziran.zirViewer', '*.zir'], ['ziran.zxViewer', '*.zx']]) {
+    const editor = editors.get(viewType);
+    assert.equal(editor?.selector?.[0]?.filenamePattern, pattern, `${viewType} selects ${pattern}`);
+    assert.equal(editor?.priority, 'default', `${viewType} inspects by default`);
+    assert.ok(manifest.activationEvents.includes(`onCustomEditor:${viewType}`),
+      `${viewType} activates on open`);
+  }
+  // The Ziran grammar colors .zi source only: binary artifacts keep their
+  // inspected editors, and TypeScript sources keep the built-in language.
+  assert.deepEqual(manifest.contributes.grammars.map((grammar) => grammar.language), ['ziran']);
+  const snippets = manifest.contributes.snippets;
+  assert.deepEqual(snippets.map((entry) => entry.language).sort(),
+    ['typescript', 'typescriptreact', 'ziran']);
+  for (const entry of snippets) {
+    const parsed = JSON.parse(readFileSync(new URL(`../${entry.path}`, import.meta.url), 'utf8'));
+    assert.ok(Object.keys(parsed).length > 0, `${entry.path} has snippets`);
+  }
+});

@@ -1,0 +1,79 @@
+{
+	"Main program": {
+		"prefix": "main",
+		"body": [
+			"main :: () -> s32 {",
+			"\t${1:// ...}",
+			"\treturn 0",
+			"}"
+		],
+		"description": "Program entry point returning a status code"
+	},
+	"Import module": {
+		"prefix": "imp",
+		"body": "#import \"${1:module}\"",
+		"description": "Extensionless module import"
+	},
+	"Named import": {
+		"prefix": "impn",
+		"body": "${1:Name} :: #import \"${2:module}\";",
+		"description": "Bind an imported module to a name"
+	},
+	"Using import": {
+		"prefix": "impu",
+		"body": "using ${1:Name} :: #import \"${2:module}\";",
+		"description": "Use an imported module's names without a qualifier"
+	},
+	"Function": {
+		"prefix": "fn",
+		"body": [
+			"${1:name} :: (${2}) -> ${3:s32} {",
+			"\t$0",
+			"}"
+		],
+		"description": "Procedure with parameters and a return type"
+	},
+	"Struct": {
+		"prefix": "struct",
+		"body": [
+			"${1:Name} :: struct {",
+			"\t${2:field}: ${3:s32};",
+			"}"
+		],
+		"description": "Record type with fields"
+	},
+	"Enum": {
+		"prefix": "enum",
+		"body": "${1:Name} :: enum { ${2:case}; }",
+		"description": "Enumerated type"
+	},
+	"Procedure type": {
+		"prefix": "ptype",
+		"body": "${1:Name} :: #type (${2}) -> ${3:s32};",
+		"description": "Type alias for a procedure signature"
+	},
+	"Constant": {
+		"prefix": "const",
+		"body": "${1:NAME} :: ${2:value};",
+		"description": "File-scope constant"
+	},
+	"Global variable": {
+		"prefix": "global",
+		"body": "${1:name}: ${2:s32};",
+		"description": "File-scope variable"
+	},
+	"If expression": {
+		"prefix": "ifx",
+		"body": "ifx ${1:condition} then ${2:value} else ${3:other}",
+		"description": "Conditional expression"
+	},
+	"For loop": {
+		"prefix": "for",
+		"body": [
+			"for ${1:values} {",
+			"\t$0",
+			"}"
+		],
+		"description": "Iterate a slice or vector (element is `it`)"
+	}
+}

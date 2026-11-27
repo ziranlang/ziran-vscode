@@ -56,7 +56,7 @@ test('checked module view exposes its full inspect and hex output', async () => 
     vscode.workspace.registerTextDocumentContentProvider = () => disposable;
     vscode.languages = { registerDocumentSymbolProvider() { return disposable; } };
     vscode.window = { registerCustomEditorProvider(viewType, value) {
-      assert.equal(viewType, 'ziran.zirViewer');
+      assert.ok(['ziran.zirViewer', 'ziran.zxViewer'].includes(viewType));
       provider = value;
       return disposable;
     } };

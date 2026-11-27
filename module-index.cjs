@@ -1,9 +1,13 @@
 const path = require('node:path');
 
+const SOURCE_EXTENSIONS = ['.zi', '.ts', '.tsx', '.zir'];
+const sourceStem = file => path.basename(file).replace(/\.(zi|ts|tsx|zir)$/, '');
+
 // The module an import line names, in `#import "text"`,
 // `Text :: #import "kryon/text";` or `using Text :: #import "kryon/text";`.
 function importAt(line, character) {
-  const match = /^\s*(?:using\s+)?(?:[A-Za-z_]\w*\s*::\s*)?#import\s+"([^"]*)/.exec(line);
+  const match = /^\s*(?:using\s+)?(?:[A-Za-z_]\w*\s*::\s*)?#import\s+"([^"]*)/.exec(line) ||
+    /^\s*(?:import\b.*?\bfrom\s*|from\s*)["']([^"']*)/.exec(line);
   if (!match) return null;
   const start = match[0].length - match[1].length;
   if (character < start || character > start + match[1].length) return null;
@@ -13,14 +17,14 @@ function importAt(line, character) {
 function moduleIds(files, roots) {
   const ids = new Set();
   for (const file of files) {
-    if (!/\.(zi|zir)$/.test(file)) continue;
-    const name = path.basename(file).replace(/\.(zi|zir)$/, '');
+    if (!/\.(zi|ts|tsx|zir)$/.test(file)) continue;
+    const name = path.basename(file).replace(/\.(zi|ts|tsx|zir)$/, '');
     if (/^[A-Za-z0-9_-]+$/.test(name)) ids.add(name);
     for (const root of roots) {
       const relative = path.relative(root, file);
       if (relative && !relative.startsWith('..' + path.sep) &&
           relative !== '..' && !path.isAbsolute(relative)) {
-        const id = relative.replace(/\.(zi|zir)$/, '').split(path.sep).join('/');
+        const id = relative.replace(/\.(zi|ts|tsx|zir)$/, '').split(path.sep).join('/');
         if (/^[A-Za-z0-9_/-]+$/.test(id)) ids.add(id);
       }
     }
@@ -34,15 +38,13 @@ function resolveModule(files, target, documentPath, roots, modulePaths) {
   const relative = target.split('/').join(path.sep);
   const local = path.dirname(documentPath);
   const directories = [local, ...roots, ...modulePaths];
-  const matches = files.filter((file) =>
-    file.endsWith(path.sep + relative + '.zi') ||
-    file.endsWith(path.sep + relative + '.zir'));
-  const rank = (file) => {
-    for (let i = 0; i < directories.length; i++) {
-      if (file === path.join(directories[i], relative + '.zi')) return i * 2;
-      if (file === path.join(directories[i], relative + '.zir')) return i * 2 + 1;
+  const matches = files.filter(file => SOURCE_EXTENSIONS.some(ext => file.endsWith(path.sep + relative + ext)));
+  const rank = file => {
+    for (let i = 0; i < directories.length; ++i) {
+      const ext = SOURCE_EXTENSIONS.findIndex(ext => file === path.join(directories[i], relative + ext));
+      if (ext >= 0) return i * SOURCE_EXTENSIONS.length + ext;
     }
-    return directories.length * 2 + (file.endsWith('.zi') ? 0 : 1);
+    return directories.length * SOURCE_EXTENSIONS.length + SOURCE_EXTENSIONS.indexOf(path.extname(file));
   };
   return [...new Set(matches)].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 }
@@ -135,8 +137,8 @@ function packageCandidates(target, paths) {
   const candidates = [];
   for (const entry of packageEntries(paths)) {
     if (entry.name !== name) continue;
-    candidates.push(path.join(entry.directory, relative + '.zi'),
-      path.join(entry.directory, relative, 'module.zi'));
+    for (const ext of SOURCE_EXTENSIONS) candidates.push(
+      path.join(entry.directory, relative + ext), path.join(entry.directory, relative, 'module' + ext));
   }
   return candidates;
 }
@@ -149,8 +151,8 @@ function packageModuleIds(files, paths) {
       const relative = path.relative(entry.directory, file);
       if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) continue;
       const parts = relative.split(path.sep);
-      if (parts.length === 1 && /\.zi$/.test(relative)) ids.add(`${entry.name}/${relative.slice(0, -3)}`);
-      if (parts.length === 2 && parts[1] === 'module.zi') ids.add(`${entry.name}/${parts[0]}`);
+      if (parts.length === 1 && SOURCE_EXTENSIONS.includes(path.extname(relative))) ids.add(`${entry.name}/${sourceStem(relative)}`);
+      if (parts.length === 2 && SOURCE_EXTENSIONS.some(ext => parts[1] === 'module' + ext)) ids.add(`${entry.name}/${parts[0]}`);
     }
   }
   return [...ids].sort();
@@ -167,13 +169,29 @@ function moduleSource(moduleName, map, paths, existsSync) {
     const prefix = `${entry.name.replace(/-/g, '_')}__`;
     if (!moduleName?.startsWith(prefix)) continue;
     const name = moduleName.slice(prefix.length);
-    for (const candidate of [path.join(entry.directory, name + '.zi'),
-      path.join(entry.directory, name, 'module.zi')]) {
+    for (const candidate of SOURCE_EXTENSIONS.flatMap(ext => [path.join(entry.directory, name + ext),
+      path.join(entry.directory, name, 'module' + ext)])) {
       if (existsSync(candidate)) return candidate;
     }
   }
   return null;
 }
 
-module.exports = { importAt, mappedImportIds, moduleIds, moduleSource, packageCandidates,
+// Native TS imports keep the standard namespace and named-import spellings.
+// This reads names only; types and signatures still come from the checked API.
+function tsBindings(text) {
+  const bindings = new Map();
+  const pattern = /^\s*import\s+(\*\s+as\s+[A-Za-z_]\w*|\{[^}]*\})\s+from\s+["']([^"']+)["']/gm;
+  for (const match of text.matchAll(pattern)) {
+    const namespace = /^\*\s+as\s+([A-Za-z_]\w*)$/.exec(match[1]);
+    if (namespace) bindings.set(namespace[1], { target: match[2], name: null });
+    else for (const part of match[1].slice(1, -1).split(',')) {
+      const named = /^\s*([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?\s*$/.exec(part);
+      if (named) bindings.set(named[2] || named[1], { target: match[2], name: named[1] });
+    }
+  }
+  return bindings;
+}
+
+module.exports = { SOURCE_EXTENSIONS, sourceStem, tsBindings, importAt, mappedImportIds, moduleIds, moduleSource, packageCandidates,
   packageEntries, packageModuleIds, parseModuleMap, resolveMapped, resolveModule };
