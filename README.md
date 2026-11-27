@@ -6,9 +6,10 @@ extensionless `#import "module"` statements; `.zir` and `.zx` build artifacts
 through inspected binary editors (`ziran inspect`, never fake text syntax); and
 TypeScript/TSX native sources inside a Ziran package, which keep VS Code's
 built-in TypeScript language and highlighting while the Ziran compiler checks
-and runs them — the compiler's own diagnostics stay the source of truth, with
-no TypeScript declaration shim standing in for checked native types. Modules
-are discovered from `.zi`, `.ts`, `.tsx` and `.zir` files in the open
+and runs them. The compiler's own diagnostics stay the source of truth. The
+stock TypeScript checker can also consume declarations emitted from those
+checked native types; the extension contains no duplicate native type schema.
+Modules are discovered from `.zi`, `.ts`, `.tsx` and `.zir` files in the open
 workspace, plus a sibling `ziran/std` directory, so a Kryon workspace can import
 the standard modules without listing them. A single `.zi` file works without a
 folder: its own directory and the Ziran checkout's `std` are searched.
@@ -122,9 +123,18 @@ has changed since checking.
 
 Typing, opening, saving (including auto-save), and switching files never start
 compiler analysis or rebuild a preview. Use the Run/Preview button to refresh.
-Completion and hover use declarations cached by the last explicit check; after
-an edit they stay empty until you check or build again. Stock syntax coloring
-and snippets remain available while editing.
+Ziran's native completion and hover use declarations cached by the last
+explicit check; after an edit their cache stays empty until you check or build
+again. Stock TypeScript services continue using the last generated bindings
+while editing. Syntax coloring and snippets remain available.
+
+For stock TypeScript checking, the extension reads the compiler's schema-1
+`build/.ziran/types/manifest.json`. It adds only the listed global declarations
+and resolves each listed import for its exact authored source file. Check,
+Run and Preview refresh the TypeScript project's bindings after an explicit
+compiler action. Missing or invalid bindings leave TypeScript's unresolved
+imports visible and are reported in the TypeScript server log. The consumer
+does not generate declarations or run a compiler while editing.
 
 ## Names, hover, and definitions
 

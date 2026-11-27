@@ -8,3 +8,5 @@ update_version.sh
 backup/**
 node_modules/wabt/bin/**
 TODO.md
+.npmrc
+typescript-plugin/**

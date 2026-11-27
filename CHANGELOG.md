@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Let the stock TypeScript server consume compiler-generated declarations and
+  exact per-source import mappings from `build/.ziran/types/manifest.json`.
+  Explicit compiler actions refresh cached bindings without suppressing type
+  errors, changing language modes or running a compiler while editing.
+
 - Run a single explicitly exported entry procedure by its declared name,
   including uppercase `Main`. Forward that entry through checked IR, bundles
   and each executable target instead of forcing `module:main`.

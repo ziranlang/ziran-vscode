@@ -2,7 +2,7 @@
   "name": "ziran-language",
   "displayName": "Ziran Language",
   "description": "Ziran language support, generated code preview for every target, and Kryon project preview",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "publisher": "kryonlabs",
   "license": "MIT",
   "icon": "icons/extension.png",
@@ -29,6 +29,16 @@
     "workspaceContains:ziran.toml"
   ],
   "contributes": {
+    "typescriptServerPlugins": [
+      {
+        "name": "ziran-typescript-plugin",
+        "enableForWorkspaceTypeScriptVersions": true,
+        "languages": [
+          "typescript",
+          "typescriptreact"
+        ]
+      }
+    ],
     "customEditors": [
       {
         "viewType": "ziran.zirViewer",
@@ -245,6 +255,7 @@
     "playwright-core": "^1.65.0"
   },
   "dependencies": {
+    "ziran-typescript-plugin": "file:./typescript-plugin",
     "@iarna/toml": "^2.2.5",
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.3.2",

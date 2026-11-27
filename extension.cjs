@@ -22,6 +22,20 @@ async function nativeDocument(document) {
     /\.tsx?$/.test(document.uri.fsPath) && Boolean(await packageRoot(document.uri.fsPath));
 }
 
+// Only explicit compiler actions refresh the binding consumer. The compiler
+// owns this manifest and every declaration; the editor never fabricates types.
+async function refreshTypeScriptBindings(document) {
+  const project = await packageRoot(document.uri.fsPath);
+  if (!project) return;
+  try { await fs.access(path.join(project, 'build', '.ziran', 'types', 'manifest.json')); }
+  catch { return; }
+  const typescript = vscode.extensions.getExtension('vscode.typescript-language-features');
+  if (!typescript) throw new Error('The built-in TypeScript language service is unavailable for native bindings.');
+  await typescript.activate();
+  await vscode.commands.executeCommand('_typescript.configurePlugin', 'ziran-typescript-plugin',
+    { project, revision: Date.now() });
+}
+
 async function collect(directory, files) {
   let entries;
   try { entries = await fs.readdir(directory, { withFileTypes: true }); }
@@ -311,6 +325,7 @@ function activate(context) {
           await importedSymbols(document, binding, seen, true);
         }
       }
+      await refreshTypeScriptBindings(document);
     })();
     checking.set(file, work);
     try { await work; } finally { checking.delete(file); }
