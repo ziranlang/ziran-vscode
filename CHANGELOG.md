@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Generate checked TypeScript bindings on explicit native TS/TSX Check, Run
+  and Preview actions, and discard cached mappings after generation fails.
+
 - Let the stock TypeScript server consume compiler-generated declarations and
   exact per-source import mappings from `build/.ziran/types/manifest.json`.
   Explicit compiler actions refresh cached bindings without suppressing type

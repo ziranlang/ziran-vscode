@@ -25,10 +25,9 @@ async function nativeDocument(document) {
 // Only explicit compiler actions refresh the binding consumer. The compiler
 // owns this manifest and every declaration; the editor never fabricates types.
 async function refreshTypeScriptBindings(document) {
+  if (!['typescript', 'typescriptreact'].includes(document.languageId)) return;
   const project = await packageRoot(document.uri.fsPath);
   if (!project) return;
-  try { await fs.access(path.join(project, 'build', '.ziran', 'types', 'manifest.json')); }
-  catch { return; }
   const typescript = vscode.extensions.getExtension('vscode.typescript-language-features');
   if (!typescript) throw new Error('The built-in TypeScript language service is unavailable for native bindings.');
   await typescript.activate();
@@ -125,7 +124,7 @@ function publishDiagnostics(document, found, diagnostics) {
   }
 }
 
-// Only explicit Check, Run and Preview actions call `ziran check`. A file
+// Only explicit Check, Run and Preview actions call the native checker. A file
 // in a Ziran package checks with its dependencies, like `ziran check --project file.zi`; a single file checks
 // with its own directory as root, like `ziran check --root . file.zi`.
 async function sourceRange(file, item) {
@@ -141,7 +140,9 @@ async function checkDocument(document, diagnostics) {
   const current = () => !document.isClosed && document.version === version && checkVersions.get(file) === generation;
   const command = await ziranCommand(file, vscode);
   const project = await packageRoot(file);
-  const args = ['check', '--diagnostics=json'];
+  const bindings = project && ['typescript', 'typescriptreact'].includes(document.languageId);
+  const args = bindings ? ['api', '--typescript', '--out', path.join(project, 'build', '.ziran', 'types'),
+    '--diagnostics=json'] : ['check', '--diagnostics=json'];
   let bases = [];
   if (project) {
     args.push('--project');
@@ -192,6 +193,7 @@ async function checkDocument(document, diagnostics) {
   }
   if (!current()) return;
   publishDiagnostics(document, found, diagnostics);
+  return result.code === 0;
 }
 
 // The declarations `ziran api` reports for a document's program, with
@@ -317,7 +319,11 @@ function activate(context) {
     const work = (async () => {
       if (document.isDirty) await document.save();
       symbolCache.clear();
-      await checkDocument(document, diagnostics);
+      const checked = await checkDocument(document, diagnostics);
+      // A failed generation removes the manifest. Refresh on failure too so
+      // stock TypeScript drops cached mappings and exposes unresolved imports.
+      await refreshTypeScriptBindings(document);
+      if (!checked) return;
       await programSymbols(document, null, true);
       if (document.languageId !== 'ziran') {
         const seen = new Set();
@@ -325,7 +331,6 @@ function activate(context) {
           await importedSymbols(document, binding, seen, true);
         }
       }
-      await refreshTypeScriptBindings(document);
     })();
     checking.set(file, work);
     try { await work; } finally { checking.delete(file); }

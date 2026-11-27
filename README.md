@@ -130,10 +130,12 @@ while editing. Syntax coloring and snippets remain available.
 
 For stock TypeScript checking, the extension reads the compiler's schema-1
 `build/.ziran/types/manifest.json`. It adds only the listed global declarations
-and resolves each listed import for its exact authored source file. Check,
-Run and Preview refresh the TypeScript project's bindings after an explicit
-compiler action. Missing or invalid bindings leave TypeScript's unresolved
-imports visible and are reported in the TypeScript server log. The consumer
+and resolves each listed import for its exact authored source file. For a
+native TS/TSX source, Check, Run and Preview invoke
+`ziran api --typescript --out build/.ziran/types --project FILE`, then refresh
+the TypeScript project. This requires a compiler with declaration emission.
+A failed generation invalidates old mappings. Missing or invalid bindings leave
+TypeScript's unresolved imports visible and are reported in the TypeScript server log. The consumer
 does not generate declarations or run a compiler while editing.
 
 ## Names, hover, and definitions
