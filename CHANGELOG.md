@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Run a single explicitly exported entry procedure by its declared name,
+  including uppercase `Main`. Forward that entry through checked IR, bundles
+  and each executable target instead of forcing `module:main`.
+
 - Run compiler analysis only on explicit Check, Run and Preview actions. Typing,
   opening, saving and switching files no longer launch checks, API queries or
   preview rebuilds; completion and hover read the last explicit analysis cache.

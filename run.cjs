@@ -3,7 +3,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createHash, randomBytes } = require('node:crypto');
 const { previewLocation, projectRoot, safeEnvironment } = require('./preview.cjs');
-const { bundleArgs, importingPrograms, mainLine, modulePaths, noMainMessage, packageRoot,
+const { bundleArgs, importingPrograms, mainLine, programEntry, modulePaths, noMainMessage, packageRoot,
   ziranCommand, ziranTool } = require('./targets.cjs');
 const { sourceStem: moduleName } = require('./module-index.cjs');
 const nativeSource = file => /\.(zi|tsx?)$/.test(file);
@@ -15,8 +15,8 @@ const RUN_TIMEOUT_MS = 10000;
 // `ziran bundle --root . --entry hello:main -o hello.zx hello.zi`: the
 // file's main as ZX, which the selected platform's lowering turns into its
 // program, run there.
-function bundleStep(command, file, paths, bundle, project = false) {
-  return { command, args: bundleArgs(file, paths, bundle, project) };
+function bundleStep(command, file, paths, bundle, project = false, entry) {
+  return { command, args: bundleArgs(file, paths, bundle, project, entry) };
 }
 
 function versionMismatchProblem(message, ziran, zi2zx) {
@@ -190,7 +190,7 @@ class RunPreview {
     const bundle = path.join(this.workDirectory, 'program.zx');
     const project = await packageRoot(this.file);
     const cwd = project || path.dirname(this.file);
-    const step = bundleStep(command, this.file, paths, bundle, Boolean(project));
+    const step = bundleStep(command, this.file, paths, bundle, Boolean(project), this.state.entry);
     const started = Date.now();
     const built = await execute(step.command, step.args, cwd, RUN_TIMEOUT_MS);
     const fail = (status, problems) => Object.assign(this.state, { output: '', time: '', failed: true, problems, status });
@@ -241,15 +241,17 @@ class RunPreview {
       await fs.mkdir(this.workDirectory, { recursive: true });
       let source = '';
       try { source = await fs.readFile(this.file, 'utf8'); } catch {}
-      const hasMain = mainLine(source) >= 0;
+      const declaration = programEntry(source);
+      const entry = declaration ? `${moduleName(this.file)}:${declaration.name}` : '';
+      const hasMain = Boolean(entry);
       const noMain = hasMain ? '' : noMainMessage(this.file, await importingPrograms(this.file));
-      Object.assign(this.state, { hasMain, noMain });
+      Object.assign(this.state, { hasMain, entry, noMain });
       const folders = (this.vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath);
       const program = this.runProgram(command, paths, folders).then(() => {
         this.state.running = false;
         this.post();
       });
-      await Promise.all([this.inspector.inspect({ command, paths, hasMain, noMain, folders }), program]);
+      await Promise.all([this.inspector.inspect({ command, paths, hasMain, entry, noMain, folders }), program]);
     } catch (error) {
       Object.assign(this.state, { status: 'Run failed', problems: error.message, failed: true });
     } finally {

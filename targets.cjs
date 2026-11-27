@@ -328,11 +328,34 @@ function dependencyFile(name, load, size) {
   return { name, dependency: true, ...(Number.isSafeInteger(size) ? { size } : {}), load };
 }
 
-// The line of the file's `main :: (` declaration, or -1. A program runs only
-// through its main; a file without one is a module for programs to import.
-function mainLine(source) {
+// Prefer the conventional entry; otherwise a single explicitly exported,
+// zero-argument procedure can be selected by its declared source name.
+// The compiler validates the selected procedure and its ABI during the build.
+function programEntry(source) {
   const lines = source.split(/\r?\n/);
-  return lines.findIndex((line) => /^main\s*::\s*\(/.test(line) || /^\s*(?:export\s+)?function\s+main\s*\(/.test(line));
+  const exported = [];
+  let exportPending = false;
+  for (let line = 0; line < lines.length; line++) {
+    const text = lines[line];
+    if (/^main\s*::\s*\(/.test(text) || /^\s*(?:export\s+)?function\s+main\s*\(/.test(text)) {
+      return { name: 'main', line };
+    }
+    if (/^#program_export(?:\s+"[^"]*")?\s*(?:\/\/.*)?$/.test(text)) {
+      exportPending = true;
+      continue;
+    }
+    const native = /^([A-Za-z_]\w*)\s*::\s*\(\s*\)\s*(?:->\s*(?:s32|void)\s*)?(?:\{|$)/.exec(text);
+    const typescript = /^export\s+function\s+([A-Za-z_]\w*)\s*\(\s*\)\s*(?::\s*(?:s32|void|number)\s*)?(?:\{|$)/.exec(text);
+    if ((native && exportPending) || typescript) {
+      exported.push({ name: (native || typescript)[1], line });
+    }
+    if (text.trim() && !/^\s*(?:\/\/|#)/.test(text)) exportPending = false;
+  }
+  return exported.length === 1 ? exported[0] : null;
+}
+
+function mainLine(source) {
+  return programEntry(source)?.line ?? -1;
 }
 
 function escapeRegExp(text) {
@@ -369,19 +392,19 @@ function sourceArgs(file, paths, project = false) {
   return args;
 }
 
-// A program's only entry is its main: Wasm and executables start there.
-function buildArgs(target, file, output, paths, project = false, { exe = false } = {}) {
+function buildArgs(target, file, output, paths, project = false,
+  { exe = false, entry = `${moduleName(file)}:main` } = {}) {
   const args = ['build', `--target=${target}`, ...sourceArgs(file, paths, project)];
   if (exe && target === 'go') args.push('--pkg', 'main');
   if (exe && target !== 'wasm') args.push('--exe');
-  if (exe || target === 'wasm') args.push('--entry', `${moduleName(file)}:main`);
+  if (exe || target === 'wasm') args.push('--entry', entry);
   args.push('-o', output, file);
   return args;
 }
 
-function bundleArgs(file, paths, bundle, project = false) {
+function bundleArgs(file, paths, bundle, project = false, entry = `${moduleName(file)}:main`) {
   return ['bundle', ...sourceArgs(file, paths, project),
-    '--entry', `${moduleName(file)}:main`, '-o', bundle, file];
+    '--entry', entry, '-o', bundle, file];
 }
 
 function irArgs(file, paths, output, project = false, entry = '', target = 'zx') {
@@ -570,7 +593,7 @@ async function cAssembly(context) {
 async function buildC(context) {
   const { command, file, output, paths, project, cwd, hasMain, noMain } = context;
   let exe = null;
-  if (hasMain) exe = await runCommand(command, buildArgs('c', file, output, paths, project, { exe: true }), cwd);
+  if (hasMain) exe = await runCommand(command, buildArgs('c', file, output, paths, project, { exe: true, entry: context.entry }), cwd);
   if (!exe || exe.code !== 0) {
     await cleanDirectory(output);
     const built = await runCommand(command, buildArgs('c', file, output, paths, project), cwd);
@@ -590,7 +613,7 @@ async function buildC(context) {
 async function buildGo(context) {
   const { command, file, output, paths, project, cwd, hasMain, noMain, work } = context;
   const name = moduleName(file);
-  const built = await runCommand(command, buildArgs('go', file, output, paths, project, { exe: hasMain }), cwd);
+  const built = await runCommand(command, buildArgs('go', file, output, paths, project, { exe: hasMain, entry: context.entry }), cwd);
   if (built.code !== 0) return { ok: false, message: problem(built, 'ziran build'), views: [] };
   const views = [...await pipelineViews(context), view('generated', 'Go', await textFiles(output, file))];
   if (!(await exists(path.join(output, 'go.mod')))) {
@@ -636,7 +659,7 @@ async function buildWasm(context) {
   if (!hasMain) return { ok: false, message: noMain, views: [] };
   const name = moduleName(file);
   const artifact = path.join(output, `${name}.wasm`);
-  const built = await runCommand(command, buildArgs('wasm', file, artifact, paths, project), cwd);
+  const built = await runCommand(command, buildArgs('wasm', file, artifact, paths, project, { entry: context.entry }), cwd);
   if (built.code !== 0) return { ok: false, message: problem(built, 'ziran build'), views: [] };
   const text = await watText(artifact);
   return { ok: true, message: '', views: [...await pipelineViews(context),
@@ -649,7 +672,7 @@ async function buildWasm(context) {
 // module without one is checked as it is.
 async function checkedProgram(context, directory) {
   const { command, file, paths, project, cwd, hasMain } = context;
-  const entry = hasMain ? `${moduleName(file)}:main` : '';
+  const entry = hasMain ? context.entry : '';
   await fs.rm(directory, { recursive: true, force: true });
   const saved = await runCommand(command, irArgs(file, paths, directory, project, entry, context.frontend), cwd);
   if (saved.code !== 0) throw new Error(`checked IR: ${problem(saved, 'ziran ir')}`);
@@ -991,14 +1014,15 @@ const BUILDERS = { c: buildC, go: buildGo, wasm: buildWasm, native: buildNative 
 
 async function targetContext(command, file, output, paths, options = {}) {
   const project = await packageRoot(file);
+  let declaration;
+  try { declaration = programEntry(await fs.readFile(file, 'utf8')); } catch {}
+  const entry = options.entry || (declaration ? `${moduleName(file)}:${declaration.name}` : '');
   let hasMain = options.hasMain;
-  if (hasMain === undefined) {
-    try { hasMain = mainLine(await fs.readFile(file, 'utf8')) >= 0; } catch { hasMain = false; }
-  }
+  if (hasMain === undefined) hasMain = Boolean(entry);
   const noMain = options.noMain || noMainMessage(file, hasMain ? [] : await importingPrograms(file));
   return { command, file, output, paths, project: Boolean(project),
     cwd: project || path.dirname(file), packageName: project && (await readManifest(project))?.package?.name,
-    hasMain, noMain, folders: options.folders || [] };
+    hasMain, entry, noMain, folders: options.folders || [] };
 }
 
 // C, Go and portable code freeze different compile-time branches into ZIR.
@@ -1052,6 +1076,6 @@ async function buildTarget(command, target, file, workDirectory, paths, options 
 
 module.exports = {
   DEFAULT_TARGETS, TARGETS, assemblyArguments, buildArgs, buildTarget, bundleArgs, cCompiler,
-  chainFor, commandStd, configuredPlatform, enabledTargets, nativeTools, platformChoice, importedPackages, importingPrograms, irArgs, listFiles, mainLine,
+  chainFor, commandStd, configuredPlatform, enabledTargets, nativeTools, platformChoice, importedPackages, importingPrograms, irArgs, listFiles, mainLine, programEntry,
   modulePaths, noMainMessage, ownModules, packageModulePaths, packageRoot, sourceArgs, splitOwn,
   observeCommands, stagesOf, startPipeline, ziranCommand, ziranTool };

@@ -102,7 +102,7 @@ test('real package builds expose each target, portable execution, IR and module 
     await fs.writeFile(path.join(directory, 'ziran.local.toml'),
       `[overrides]\nziran=${JSON.stringify(path.resolve('../ziran'))}\n`);
     await fs.writeFile(path.join(directory, 'src/message.zi'), 'Message :: "Package roots!\\n"\n');
-    await fs.writeFile(source, '#import "message"\nmain :: () { print(Message); }\n');
+    await fs.writeFile(source, '#import "message"\n#program_export "ExampleMain"\nMain :: () { print(Message); }\n');
     const lock = await runCommand(compiler, ['lock'], directory); assert.equal(lock.code, 0, lock.stderr);
     const work = path.join(directory, 'generated'); const results = {};
     for (const target of ['c', 'go', 'wasm']) {
@@ -133,7 +133,7 @@ test('real package builds expose each target, portable execution, IR and module 
       const binary = view(native, 'binary').files[0];
       assert.deepEqual(await magic(binary), [0x7f, 0x45, 0x4c, 0x46]);
       const code = binary.binary.regions.filter(region => region.kind === 'code');
-      assert.deepEqual(code.map(region => region.label), ['hello:main']);
+      assert.deepEqual(code.map(region => region.label), ['hello:Main']);
       assert.equal(view(native, 'zx').files[0].name, 'final.zx');
       const headers = await runCommand('readelf', ['-lW', binary.binary.path], directory);
       assert.equal(headers.code, 0, headers.stderr);
@@ -149,7 +149,7 @@ test('real package builds expose each target, portable execution, IR and module 
     const ir = await runCommand(compiler, irArgs(source, [], path.join(directory, 'ir'), true), directory);
     assert.equal(ir.code, 0, ir.stderr);
     // The package's bundle runs on Linux x86-64 the way the Run pane runs it.
-    const step = bundleStep(compiler, source, [], path.join(directory, 'hello.zx'), true);
+    const step = bundleStep(compiler, source, [], path.join(directory, 'hello.zx'), true, 'hello:Main');
     const bundled = await execute(step.command, step.args, directory, 10000);
     assert.equal(bundled.code, 0, bundled.stderr);
     if (nativeTools && process.arch === 'x64') {

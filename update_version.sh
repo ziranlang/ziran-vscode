@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version=$(sed -n 's/^## \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' CHANGELOG.md | head -n 1)
+version=${1:-$(sed -n 's/^## \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' CHANGELOG.md | head -n 1)}
 test -n "$version"
 node - "$version" <<'NODE'
 const fs = require('node:fs');

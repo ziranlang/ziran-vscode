@@ -669,7 +669,7 @@ class TargetInspector {
 
   // Build every enabled target for the current file; each tab fills in as
   // its own build finishes, while still showing the last run's output.
-  async inspect({ command, paths, hasMain, noMain, folders }) {
+  async inspect({ command, paths, hasMain, entry, noMain, folders }) {
     const file = this.file;
     const previous = new Map(this.state.results.map((result) => [result.id, result]));
     this.state.results = this.state.enabled.map((target) =>
@@ -682,7 +682,7 @@ class TargetInspector {
     const { platform } = await this.choosePlatform({ command, folders });
     if (generation !== this.generation) return;
     this.post();
-    const options = { hasMain, noMain, folders, platform };
+    const options = { hasMain, entry, noMain, folders, platform };
     const pipeline = this.state.enabled.length ?
       startPipeline(command, file, path.join(work, 'pipeline'), paths, { ...options, targets: this.state.enabled }) : null;
     await Promise.all(this.state.enabled.map((target, index) =>

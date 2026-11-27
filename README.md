@@ -23,7 +23,7 @@ it does not bundle Kryon widgets.
 
 ## Run pane
 
-Click ▶ in the editor title bar, or **▶ Run** above `main`, to open the **Run**
+Click ▶ in the editor title bar, or **▶ Run** above the entry, to open the **Run**
 pane beside a `.zi`, `.ts` or `.tsx` file. It shows the program's output in a window, with the
 run time and any build or runtime errors below it (a run stops after 10
 seconds), and **Targets**: one tab per target (C, Go, WebAssembly and Native),
@@ -46,11 +46,12 @@ File contents load when opened; folder state and the selected file are remembere
 Ziran source is colored with this extension's grammar; the other tabs use
 light highlighting in the editor's theme.
 
-Saving a `.zi` file in the same directory reruns everything; **Run again** does
-it on demand. A file without `main :: ()` still shows its source and generated
-code. The program is bundled with `ziran bundle --entry module:main` and run
-with `ziran run` on the portable runtime. In Kryon projects ▶ runs the Kryon
-preview instead.
+Use **Run again** to refresh the build. The entry is `main`, or a single
+explicitly exported zero-argument procedure such as `Main`; its declared name
+is forwarded through every build stage. A file without an entry still shows
+its source and generated code. The program is bundled with
+`ziran bundle --entry module:entry` and run with `ziran run` on the portable
+runtime. In Kryon projects ▶ runs the Kryon preview instead.
 
 ### Platforms
 

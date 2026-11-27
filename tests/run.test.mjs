@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { test } from 'node:test';
 const require = createRequire(import.meta.url);
 const { bundleStep, mainLine, runHtml, versionMismatchProblem, workDirectoryFor } = require('../run.cjs');
+const { programEntry } = require('../targets.cjs');
 const { HEX_VIEW_SOURCE, HIGHLIGHT_SOURCE, TargetInspector } = require('../inspector.cjs');
 const { binaryRegions } = require('../binary-layout.cjs');
 const put = (data, values) => { for (const [method, offset, value] of values) data[method](value, offset); return data; };
@@ -109,6 +110,12 @@ test('run commands, webview navigation and generated-code highlighting stay vali
   assert.equal(workDirectoryFor('/notes/hello.zi', '/extension-storage/run/owned'), work);
   assert.notEqual(workDirectoryFor('/notes/other.zi', '/extension-storage/run/owned'), work);
   assert.equal(mainLine('// hello\nmain :: () {\n}\n'), 1);
+  assert.deepEqual(programEntry('#program_export "ExampleMain"\nMain :: () -> s32 { return 0 }'),
+    { name: 'Main', line: 1 });
+  assert.equal(programEntry('#program_export\nDraw :: (value:s32) {}'), null);
+  assert.equal(programEntry('#program_export\nFirst :: () {}\n#program_export\nSecond :: () {}'), null);
+  assert.deepEqual(programEntry('#program_export\nOther :: () {}\nmain :: () {}'), { name: 'main', line: 2 });
+  assert.deepEqual(programEntry('export function Start(): number\n{ return 0; }'), { name: 'Start', line: 0 });
   for (const source of ['Answer :: () -> s32 { return 42 }\n', '  main :: () {}\n']) assert.equal(mainLine(source), -1);
   assert.deepEqual(bundleStep('ziran', '/notes/hello.zi', ['/std'], '/tmp/hello.zx'),
     { command: 'ziran', args: ['bundle', '--root', '/notes', '--module-path', '/std', '--entry', 'hello:main', '-o', '/tmp/hello.zx', '/notes/hello.zi'] });
