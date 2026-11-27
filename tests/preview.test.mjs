@@ -251,7 +251,7 @@ test('a native build that cannot link a capability shows the named gap and falls
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 
-test('the preview follows the active .zi file and keeps its window and tabs for the same project', () => {
+test('explicit preview retargeting keeps its window and tabs for the same project', () => {
   const { Preview } = require('../preview.cjs');
   const preview = Object.create(Preview.prototype);
   const scheduled = [];
@@ -270,8 +270,8 @@ test('the preview follows the active .zi file and keeps its window and tabs for 
     storage: '/s', windowChild: null, watchers: [], watch() { this.watched = true; }, schedule() {},
     panel: {}, state: { project: 'a', html: '<canvas>', windowStatus: 'Window open' } });
   assert.equal(lone.follow({ key: '/y/w.zi', root: null, source: '/y/w.zi', standalone: true }), true);
-  assert.deepEqual([lone.source, lone.location.key, lone.state.html, lone.state.windowStatus, lone.watched],
-    ['/y/w.zi', '/y/w.zi', '', '', true]);
+  assert.deepEqual([lone.source, lone.location.key, lone.state.html, lone.state.windowStatus],
+    ['/y/w.zi', '/y/w.zi', '', '']);
 });
 
 test('the live frame fills its page edge to edge over the editor theme', async () => {

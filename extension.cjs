@@ -111,8 +111,8 @@ function publishDiagnostics(document, found, diagnostics) {
   }
 }
 
-// `ziran check` on open and save. A file in a Ziran package checks with its
-// dependencies, like `ziran check --project file.zi`; a single file checks
+// Only explicit Check, Run and Preview actions call `ziran check`. A file
+// in a Ziran package checks with its dependencies, like `ziran check --project file.zi`; a single file checks
 // with its own directory as root, like `ziran check --root . file.zi`.
 async function sourceRange(file, item) {
   try { return diagnosticRange(vscode, item, await fs.readFile(file, 'utf8')); }
@@ -183,10 +183,12 @@ async function checkDocument(document, diagnostics) {
 // The declarations `ziran api` reports for a document's program, with
 // absolute paths, and the document's own module; cached per version.
 const symbolCache = new Map();
-async function programSymbols(document, moduleName = null) {
+async function programSymbols(document, moduleName = null, refresh = false) {
   const key = document.uri.fsPath + '\0' + (moduleName || '');
   const cached = symbolCache.get(key);
   if (cached && cached.version === document.version) return cached.result;
+  // Language providers must never start a compiler while the owner edits.
+  if (!refresh) return { symbols: [], own: null, aliases: new Map(), modules: [] };
   const result = (async () => {
     const file = document.uri.fsPath;
     const command = await ziranCommand(file, vscode);
@@ -230,21 +232,21 @@ async function programSymbols(document, moduleName = null) {
 
 // Resolve TS import spellings through the compiler's module map, never an
 // npm alias or a duplicate handwritten declaration.
-async function importedSymbols(document, binding, seen = new Set()) {
+async function importedSymbols(document, binding, seen = new Set(), refresh = false) {
   const map = await projectModuleMap(document.uri.fsPath);
   const source = map && resolveMapped(map, document.uri.fsPath, binding.target)[0];
   const moduleName = source ? sourceStem(source) : binding.target;
-  return moduleSymbols(document, moduleName, seen);
+  return moduleSymbols(document, moduleName, seen, refresh);
 }
-async function moduleSymbols(document, moduleName, seen = new Set()) {
+async function moduleSymbols(document, moduleName, seen = new Set(), refresh = false) {
   if (seen.has(moduleName)) return [];
   seen.add(moduleName);
-  const result = await programSymbols(document, moduleName);
+  const result = await programSymbols(document, moduleName, refresh);
   const symbols = [...result.symbols];
   // Ziran's using imports expose the native module's declarations too.
   for (const module of result.modules) for (const imported of module.imports || []) {
     if (imported.using) {
-      symbols.push(...await moduleSymbols(document, imported.resolved_module || imported.target, seen));
+      symbols.push(...await moduleSymbols(document, imported.resolved_module || imported.target, seen, refresh));
     }
   }
   return symbols;
@@ -270,8 +272,13 @@ async function symbolAtPosition(document, position) {
 }
 
 function activate(context) {
-  activatePreview(context, vscode);
-  activateRun(context, vscode);
+  // Build actions alone refresh native compiler diagnostics and declarations.
+  const onBuild = async file => {
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
+    await vscode.commands.executeCommand('ziran.check', document.uri);
+  };
+  activatePreview(context, vscode, onBuild);
+  activateRun(context, vscode, onBuild);
   activateZirEditor(context, vscode);
   let editorRevision = 0;
   const updatePipelineSource = async editor => {
@@ -283,20 +290,38 @@ function activate(context) {
   void updatePipelineSource(vscode.window.activeTextEditor);
   const diagnostics = vscode.languages.createDiagnosticCollection('ziran');
   context.subscriptions.push(diagnostics,
-    vscode.workspace.onDidOpenTextDocument((document) => checkDocument(document, diagnostics)),
-    vscode.workspace.onDidSaveTextDocument((document) => checkDocument(document, diagnostics)),
     vscode.workspace.onDidCloseTextDocument((document) => {
       checkVersions.delete(document.uri.fsPath);
       publishDiagnostics(document, new Map(), diagnostics);
     }));
-  for (const document of vscode.workspace.textDocuments) checkDocument(document, diagnostics);
+  const checking = new Map();
+  context.subscriptions.push(vscode.commands.registerCommand('ziran.check', async uri => {
+    const document = uri ? await vscode.workspace.openTextDocument(uri) : vscode.window.activeTextEditor?.document;
+    if (!document || !await nativeDocument(document)) return;
+    const file = document.uri.fsPath;
+    if (checking.has(file)) return checking.get(file);
+    const work = (async () => {
+      if (document.isDirty) await document.save();
+      symbolCache.clear();
+      await checkDocument(document, diagnostics);
+      await programSymbols(document, null, true);
+      if (document.languageId !== 'ziran') {
+        const seen = new Set();
+        for (const binding of tsBindings(document.getText()).values()) {
+          await importedSymbols(document, binding, seen, true);
+        }
+      }
+    })();
+    checking.set(file, work);
+    try { await work; } finally { checking.delete(file); }
+  }));
   context.subscriptions.push(vscode.languages.registerCodeActionsProvider(sourceSelector, {
     provideCodeActions(document, range, context) {
       return diagnosticActions(vscode, document, context);
     },
   }, { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }));
   const caches = new Map();
-  const invalidate = () => { caches.clear(); symbolCache.clear(); };
+  const invalidate = () => { caches.clear(); };
   const index = (document) => {
     const folder = vscode.workspace.getWorkspaceFolder(document.uri);
     const key = folder ? '' : path.dirname(document.uri.fsPath);
@@ -315,6 +340,7 @@ function activate(context) {
 
   context.subscriptions.push(vscode.languages.registerCompletionItemProvider(sourceSelector, {
     async provideCompletionItems(document, position) {
+      if (symbolCache.get(document.uri.fsPath + '\0')?.version !== document.version) return null;
       if (!await nativeDocument(document)) return null;
       const imported = importAt(document.lineAt(position.line).text, position.character);
       if (!imported) {
@@ -363,6 +389,7 @@ function activate(context) {
 
   context.subscriptions.push(vscode.languages.registerDefinitionProvider(sourceSelector, {
     async provideDefinition(document, position) {
+      if (symbolCache.get(document.uri.fsPath + '\0')?.version !== document.version) return null;
       if (!await nativeDocument(document)) return null;
       const imported = importAt(document.lineAt(position.line).text, position.character);
       if (!imported) {
@@ -387,6 +414,7 @@ function activate(context) {
 
   context.subscriptions.push(vscode.languages.registerHoverProvider(sourceSelector, {
     async provideHover(document, position) {
+      if (symbolCache.get(document.uri.fsPath + '\0')?.version !== document.version) return null;
       if (!await nativeDocument(document)) return null;
       if (importAt(document.lineAt(position.line).text, position.character)) return null;
       const at = await symbolAtPosition(document, position);

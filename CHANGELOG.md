@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Run compiler analysis only on explicit Check, Run and Preview actions. Typing,
+  opening, saving and switching files no longer launch checks, API queries or
+  preview rebuilds; completion and hover read the last explicit analysis cache.
+
 - Treat TypeScript and TSX native sources inside a Ziran package as pipeline
   files: the Run button and Kryon preview follow them like `.zi`, rebuilds
   watch them, module discovery and snippets cover them, and the Ziran compiler

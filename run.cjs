@@ -106,7 +106,8 @@ function workDirectoryFor(file, buildRoot) {
 }
 
 class RunPreview {
-  constructor(file, context, vscode) {
+  constructor(file, context, vscode, onBuild = async () => {}) {
+    this.onBuild = onBuild;
     this.file = file;
     this.vscode = vscode;
     this.disposed = false;
@@ -129,10 +130,6 @@ class RunPreview {
     this.disposables = [
       this.panel.onDidDispose(() => this.dispose()),
       this.panel.webview.onDidReceiveMessage((message) => this.message(message)),
-      vscode.workspace.onDidSaveTextDocument((document) => {
-        if (nativeSource(document.uri.fsPath) &&
-            path.dirname(document.uri.fsPath) === path.dirname(this.file)) this.schedule();
-      }),
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (!event.affectsConfiguration('ziran', vscode.Uri.file(this.file))) return;
         this.inspector.refreshTargets();
@@ -227,7 +224,7 @@ class RunPreview {
       time: `${((Date.now() - started) / 1000).toFixed(2)}s`,
       failed,
       status: ran.timedOut ? `Stopped after ${RUN_TIMEOUT_MS / 1000}s` :
-        failed ? `Exited with ${ran.code} on ${platform.label}` : `Up to date · ${platform.label} via ${route.label} · reruns on save`,
+        failed ? `Exited with ${ran.code} on ${platform.label}` : `Up to date · ${platform.label} via ${route.label}`,
     });
   }
 
@@ -238,6 +235,7 @@ class RunPreview {
     Object.assign(this.state, { status: 'Building and running…', running: true, failed: false });
     this.post();
     try {
+      await this.onBuild(this.file);
       const command = await ziranCommand(this.file, this.vscode);
       const paths = await modulePaths(this.file, command, this.vscode);
       await fs.mkdir(this.workDirectory, { recursive: true });
@@ -264,7 +262,7 @@ class RunPreview {
   }
 }
 
-function activateRun(context, vscode) {
+function activateRun(context, vscode, onBuild = async () => {}) {
   /* One Run pane, showing whichever .zi file has focus. */
   let pane = null;
   const isZiran = (document) => document?.uri.scheme === 'file' &&
@@ -276,7 +274,7 @@ function activateRun(context, vscode) {
       pane.schedule();
       return;
     }
-    pane = new RunPreview(file, context, vscode);
+    pane = new RunPreview(file, context, vscode, onBuild);
     const opened = pane;
     pane.panel.onDidDispose(() => { if (pane === opened) pane = null; });
   };
@@ -297,12 +295,6 @@ function activateRun(context, vscode) {
         return;
       }
       openPane(file);
-    }),
-    vscode.window.onDidChangeActiveTextEditor((editor) => {
-      if (pane && isZiran(editor?.document)) {
-        const file = editor.document.uri.fsPath;
-        packageRoot(file).then(root => { if (root || file.endsWith('.zi')) pane?.retarget(file); });
-      }
     }),
     vscode.languages.registerCodeLensProvider(['ziran', 'typescript', 'typescriptreact'].map(language => ({ language, scheme: 'file' })), {
       async provideCodeLenses(document) {

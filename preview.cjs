@@ -297,12 +297,13 @@ async function projectEntry(root) {
 }
 
 class Preview {
-  constructor(location, context, vscode) {
+  constructor(location, context, vscode, onBuild = async () => {}) {
     this.location = location;
     this.source = location.source;
     this.storage = context.globalStorageUri.fsPath;
     this.root = location.root || standaloneRoot(location.source, this.storage);
     this.vscode = vscode;
+    this.onBuild = onBuild;
     this.disposed = false;
     this.running = false;
     this.rerun = false;
@@ -325,15 +326,9 @@ class Preview {
       storage: this.storage, rerun: () => this.inspectTargets() });
     this.panel.webview.html = previewHtml(randomBytes(16).toString('hex'));
     this.watchers = [];
-    this.watch();
     this.disposables = [
       this.panel.onDidDispose(() => this.dispose()),
       this.panel.webview.onDidReceiveMessage((message) => this.message(message)),
-      vscode.workspace.onDidSaveTextDocument((document) => {
-        if (document.uri.scheme === 'file' && previewInput(this.watchRoot, document.uri.fsPath)) {
-          this.schedule();
-        }
-      }),
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (!this.inspector.file || !event.affectsConfiguration('ziran', vscode.Uri.file(this.inspector.file))) return;
         this.inspector.refreshTargets();
@@ -344,25 +339,7 @@ class Preview {
     this.run();
   }
 
-  // Rebuilds follow the files of the previewed project or program.
-  watch() {
-    for (const watcher of this.watchers) watcher.dispose();
-    const { vscode } = this;
-    const target = this.location.standalone ? path.dirname(this.source) : this.root;
-    this.watchRoot = vscode.workspace.getWorkspaceFolder?.(vscode.Uri.file(target))?.uri.fsPath || target;
-    this.watchers = [];
-    for (const pattern of ['**/*.{zi,ts,tsx}', '**/kryon.toml', '**/ziran{,.local}.toml', '**/ziran.lock']) {
-      const watcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(vscode.Uri.file(this.watchRoot), pattern));
-      const changed = (uri) => { if (previewInput(this.watchRoot, uri.fsPath)) this.schedule(); };
-      this.watchers.push(watcher, watcher.onDidChange(changed),
-        watcher.onDidCreate(changed), watcher.onDidDelete(changed));
-    }
-  }
-
-  // The preview follows the editor's active .zi file: a file of the
-  // previewed project changes what the target tabs inspect; another Kryon
-  // program moves the whole preview, live window included.
+  // An explicit Preview command can change the inspected source or program.
   follow(location) {
     if (this.disposed || !location.source || location.source === this.source) return false;
     if (location.standalone !== this.location.standalone ||
@@ -374,7 +351,6 @@ class Preview {
       this.location = location;
       this.root = standaloneRoot(location.source, this.storage);
       Object.assign(this.state, { html: '', windowStatus: '', windowOutput: '', windowBuilding: false });
-      this.watch();
     }
     const title = sourceStem(this.source);
     this.panel.title = `Preview: ${title}`;
@@ -515,7 +491,7 @@ class Preview {
   }
 
   // The target views under the live window, for the previewed source or the
-  // project's entry. A save reruns them beside the preview build.
+  // project's entry. Only explicit build actions refresh these views.
   async inspectTargets() {
     if (this.disposed) return;
     if (this.inspecting) { this.reinspect = true; return; }
@@ -549,8 +525,10 @@ class Preview {
     this.running = true;
     this.state.status = 'Building and running…';
     this.post();
-    this.inspectTargets();
     try {
+      const file = this.source || await projectEntry(this.root);
+      if (file) await this.onBuild(file);
+      this.inspectTargets();
       if (this.location.standalone) {
         this.root = await prepareStandalonePreview(this.source, this.storage, this.vscode);
       }
@@ -562,7 +540,7 @@ class Preview {
       if (this.disposed) return;
       this.state.output = (result.stdout + result.stderr).trimEnd();
       this.state.html = result.code === 0 ? await require('./preview-assets.cjs').previewAssets(build.artifact) : '';
-      this.state.status = result.code === 0 ? 'Up to date · reloads on save' :
+      this.state.status = result.code === 0 ? 'Up to date' :
         `Build or run failed${result.code === null ? '' : ` (exit ${result.code})`}`;
       this.post();
     } catch (error) {
@@ -577,7 +555,7 @@ class Preview {
   }
 }
 
-function activatePreview(context, vscode) {
+function activatePreview(context, vscode, onBuild = async () => {}) {
   const previews = new Map();
   context.subscriptions.push({ dispose() { for (const preview of previews.values()) preview.dispose(); } });
   const runButton = vscode.window.createStatusBarItem('kryon.run',
@@ -601,24 +579,8 @@ function activatePreview(context, vscode) {
     if (kryon) runButton.show(); else runButton.hide();
     vscode.commands.executeCommand('setContext', 'ziran.kryonProject', kryon);
   };
-  // A preview follows the active .zi editor; other editors leave it alone.
-  const followEditor = async (editor) => {
-    const file = editor?.document.uri.scheme === 'file' ? editor.document.uri.fsPath : '';
-    if (!nativeSource(file)) return;
-    const location = await previewLocation(file);
-    if (!location) return;
-    for (const [key, preview] of previews) {
-      if (key !== location.key && !(location.standalone && preview.location.standalone && !previews.has(location.key))) continue;
-      const before = preview.location.key;
-      if (preview.follow(location) && preview.location.key !== before) {
-        previews.delete(before);
-        previews.set(preview.location.key, preview);
-      }
-      return;
-    }
-  };
   context.subscriptions.push(
-    vscode.window.onDidChangeActiveTextEditor((editor) => { updateRunButton(); void followEditor(editor); }),
+    vscode.window.onDidChangeActiveTextEditor(updateRunButton),
     vscode.workspace.onDidChangeWorkspaceFolders(updateRunButton),
     vscode.languages.registerCodeLensProvider(['ziran', 'typescript', 'typescriptreact'].map(language => ({ language, scheme: 'file' })), {
       async provideCodeLenses(document) {
@@ -647,8 +609,15 @@ function activatePreview(context, vscode) {
       vscode.window.showErrorMessage('Open a Kryon app or native program importing kryon/app to preview it.');
       return;
     }
-    if (previews.has(location.key)) { previews.get(location.key).reveal(); return; }
-    const preview = new Preview(location, context, vscode);
+    const document = location.source ? await vscode.workspace.openTextDocument(vscode.Uri.file(location.source)) : null;
+    if (document?.isDirty) await document.save();
+    if (previews.has(location.key)) {
+      const preview = previews.get(location.key);
+      if (!preview.follow(location)) preview.schedule();
+      preview.reveal();
+      return;
+    }
+    const preview = new Preview(location, context, vscode, onBuild);
     previews.set(location.key, preview);
     preview.panel.onDidDispose(() => {
       for (const [key, shown] of previews) if (shown === preview) previews.delete(key);

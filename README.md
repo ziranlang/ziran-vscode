@@ -111,16 +111,23 @@ original source is never replaced with generated stages.
 
 ## Checking
 
-Opening or saving a `.zi` file runs `ziran check` on it and lists errors in the
+Use **Ziran: Check Current File**, **Run** or **Kryon: Preview** to run
+`ziran check` and list errors in the
 **Problems** panel and under the source, with the file's own directory as the
 root, as `ziran check --root . file.zi` would. Type errors link to related
 declarations. Missing-name errors offer a Quick Fix when the compiler
 identifies an unambiguous source replacement; a fix is discarded if the name
 has changed since checking.
 
+Typing, opening, saving (including auto-save), and switching files never start
+compiler analysis or rebuild a preview. Use the Run/Preview button to refresh.
+Completion and hover use declarations cached by the last explicit check; after
+an edit they stay empty until you check or build again. Stock syntax coloring
+and snippets remain available while editing.
+
 ## Names, hover, and definitions
 
-The extension asks `ziran api` which procedures, types, constants and globals
+An explicit check or build asks `ziran api` which procedures, types, constants and globals
 a file's program declares, including those of its imports. Completion offers
 them with their signatures, hovering a name shows its declaration and the
 `//` comment above it, and Go to Definition opens the declaring line. A name

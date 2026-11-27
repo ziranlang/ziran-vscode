@@ -31,6 +31,7 @@ async function writePackage(root) {
 function activate(command) {
   const providers = {};
   const listeners = {};
+  const commands = {};
   const diagnostics = new Map();
   class Position { constructor(line, character) { this.line = line; this.character = character; } }
   class Range { constructor(...args) { this.args = args; } }
@@ -55,7 +56,8 @@ function activate(command) {
     Uri: { file(fsPath) { return { fsPath, scheme: 'file' }; } },
     RelativePattern: class {},
     EventEmitter: class { constructor() { this.event = () => disposable; } fire() {} dispose() {} },
-    commands: { registerCommand() { return disposable; }, executeCommand() {} },
+    commands: { registerCommand(name, handler) { commands[name] = handler; return disposable; },
+      executeCommand(name, ...args) { return commands[name]?.(...args); } },
     languages: {
       createDiagnosticCollection() {
         return { ...disposable, set(uri, list) { diagnostics.set(uri.fsPath, list); },
@@ -100,7 +102,7 @@ function activate(command) {
     delete require.cache[require.resolve('../extension.cjs')];
     require('../extension.cjs').activate({ subscriptions: [] });
   } finally { Module._load = load; }
-  return { vscode, providers, listeners, diagnostics, Position };
+  return { vscode, providers, listeners, diagnostics, commands, Position };
 }
 
 function documentFor(file, text) {
@@ -111,7 +113,12 @@ function documentFor(file, text) {
 
 async function checkProviders(extension, file, expectedLabel) {
   const document = documentFor(file, HELLO);
-  await extension.listeners.open(document);
+  extension.vscode.workspace.openTextDocument = async () => document;
+  assert.equal(extension.listeners.open, undefined, 'opening a file never starts compiler analysis');
+  const before = new extension.Position(3, HELLO.split('\n')[3].indexOf('Width') + 2);
+  assert.equal(await extension.providers.hover.provideHover(document, before), null);
+  assert.equal(await extension.providers.completion.provideCompletionItems(document, before), null);
+  await extension.commands['ziran.check'](document.uri);
   assert.deepEqual((extension.diagnostics.get(file) || []).map((item) => item.message), []);
   // Go to Definition on the import string opens the package module.
   const [imported] = await extension.providers.definition.provideDefinition(document,
@@ -130,6 +137,9 @@ async function checkProviders(extension, file, expectedLabel) {
   const items = await extension.providers.completion.provideCompletionItems(document,
     new extension.Position(3, line.indexOf('Label.') + 'Label.'.length));
   assert.deepEqual(items.map((item) => item.label).sort(), ['Padding', 'Width']);
+  document.version++;
+  assert.equal(await extension.providers.hover.provideHover(document, at), null, 'edits never refresh compiler analysis');
+  assert.equal(await extension.providers.completion.provideCompletionItems(document, at), null);
 }
 
 test('a lone file finds a package checkout for its qualified imports', { skip: !existsSync(compiler) }, async () => {
